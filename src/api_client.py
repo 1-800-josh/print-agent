@@ -46,20 +46,10 @@ class User:
 
 
 @dataclass
-class AgentConfigResponse:
-    """Response from the agent config API endpoint."""
-
-    artwork_network_path: Optional[str]
-    user_network_path: Optional[str]
-
-
-@dataclass
 class TasksResponse:
     """Response from the tasks API endpoint."""
 
     tasks: List[PrintingTask]
-    artwork_network_path: Optional[str]
-    user_network_path: Optional[str]
 
 
 class APIClient:
@@ -102,6 +92,31 @@ class APIClient:
         """Get full URL for API endpoint."""
         return f"{self.base_url}{path}"
 
+    def _parse_response(self, response: requests.Response, expected_type: str = "dict") -> Any:
+        """Parse and normalize API response.
+
+        Handles common API envelope variants:
+        - {"data":[...]}
+        - {"json":[...]}
+        - {"json":{"data":[...]}}
+        """
+        data = response.json()
+
+        if isinstance(data, str):
+            data = json.loads(data)
+
+        payload = data.get("json", data)
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+
+        if expected_type == "dict" and not isinstance(payload, dict):
+            raise ValueError(
+                f"API returned unexpected response type {type(payload).__name__}, expected dict. "
+                f"Response: {repr(data)[:200]}"
+            )
+
+        return payload
+
     def fetch_tasks(self) -> TasksResponse:
         """Fetch READY_FOR_PRODUCTION printing tasks."""
         url = self._get_url(f"/api/organisations/{self.organisation_id}/print-agent/printing-tasks")
@@ -109,31 +124,7 @@ class APIClient:
         try:
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
-            data = response.json()
-
-            if isinstance(data, str):
-                data = json.loads(data)
-
-            if not isinstance(data, dict):
-                raise ValueError(
-                    f"API returned unexpected response type {type(data).__name__}, expected dict. "
-                    f"Response: {repr(data)[:200]}"
-                )
-
-            # Normalize common API envelope variants:
-            # - {"tasks":[...]}
-            # - {"json":[...]}
-            # - {"json":{"tasks":[...], ...}}
-            payload: Any = data.get("json", data)
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-
-            # Extract network paths from either top-level or nested payload
-            artwork_network_path = data.get("artworkNetworkPath")
-            user_network_path = data.get("userNetworkPath")
-            if isinstance(payload, dict):
-                artwork_network_path = payload.get("artworkNetworkPath", artwork_network_path)
-                user_network_path = payload.get("userNetworkPath", user_network_path)
+            payload = self._parse_response(response, expected_type="list")
 
             if isinstance(payload, list):
                 tasks_raw = payload
@@ -187,11 +178,7 @@ class APIClient:
                 )
 
             self.logger.info(f"Fetched {len(tasks)} tasks from API")
-            return TasksResponse(
-                tasks=tasks,
-                artwork_network_path=artwork_network_path,
-                user_network_path=user_network_path,
-            )
+            return TasksResponse(tasks=tasks)
 
         except Exception as e:
             self.logger.error(f"Failed to fetch tasks: {e}")
@@ -263,43 +250,6 @@ class APIClient:
             self.logger.error(f"Failed to complete task {task_id}: {e}")
             return False
 
-    def fetch_agent_config(self) -> AgentConfigResponse:
-        """Fetch agent configuration from internal portal."""
-        url = self._get_url(f"/api/organisations/{self.organisation_id}/print-agent/agent-config")
-
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-
-            if isinstance(data, str):
-                data = json.loads(data)
-
-            # Normalize: API may wrap payload in {"json": {...}}
-            payload = data.get("json", data)
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            if not isinstance(payload, dict):
-                payload = data
-
-            artwork_network_path = payload.get("artworksNetworkPath") or payload.get(
-                "artworkNetworkPath"
-            )
-            user_network_path = payload.get("usersNetworkPath") or payload.get("userNetworkPath")
-
-            self.logger.info(
-                f"Fetched agent config: artwork_network_path={artwork_network_path}, "
-                f"user_network_path={user_network_path}"
-            )
-            return AgentConfigResponse(
-                artwork_network_path=artwork_network_path,
-                user_network_path=user_network_path,
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to fetch agent config: {e}")
-            raise
-
     def fetch_users(self) -> List[User]:
         """Fetch all internal users from internal portal."""
         url = self._get_url(f"/api/organisations/{self.organisation_id}/print-agent/users")
@@ -307,15 +257,7 @@ class APIClient:
         try:
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
-            data = response.json()
-
-            if isinstance(data, str):
-                data = json.loads(data)
-
-            # Normalize: API may wrap payload in {"json": [...]} or {"json": {"users": [...]}}
-            payload = data.get("json", data)
-            if isinstance(payload, str):
-                payload = json.loads(payload)
+            payload = self._parse_response(response)
 
             if isinstance(payload, list):
                 users_data = payload

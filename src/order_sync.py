@@ -2,6 +2,7 @@
 
 import logging
 import os
+import zipfile
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ import requests
 
 from src.api_client import APIClient, PrintingTask
 from src.config import AgentConfig
-from src.utils import generate_filename, generate_task_folder_name
+from src.utils import generate_filename
 
 
 @dataclass
@@ -41,8 +42,7 @@ class OrderSync:
         self.logger = logger or logging.getLogger(__name__)
         self._file_exists_in_users = file_exists_in_users
         self.session = requests.Session()
-        self.session.headers.update({"x-api-key": config.API_KEY})
-        self._artwork_network_path: Optional[str] = None
+        self.session.headers.update({"x-api-key": self.config.API_KEY})
         self._rename_logger = self._setup_rename_logger()
 
     def _setup_rename_logger(self) -> logging.Logger:
@@ -67,16 +67,9 @@ class OrderSync:
         """Log a file rename operation."""
         self._rename_logger.info(f"Renamed: {old_name} -> {new_name} (folder: {folder})")
 
-    def set_artwork_network_path(self, path: Optional[str]) -> None:
-        """Set the artwork network path for downloading artworks."""
-        self._artwork_network_path = path
-
     def fetch_ready_orders(self) -> List[PrintingTask]:
         """Fetch all READY_FOR_PRODUCTION orders with configured network paths."""
         response = self.api_client.fetch_tasks()
-
-        # Update artwork network path from response
-        self.set_artwork_network_path(response.artwork_network_path)
 
         tasks = response.tasks
 
@@ -100,10 +93,12 @@ class OrderSync:
 
     def download_artwork(
         self,
-        artwork_data: Tuple[str, str, str, str],  # url, save_path, order_id, artwork_id
+        artwork_data: Tuple[
+            str, str, str, str, str, str
+        ],  # url, save_path, order_id, artwork_id, task_id, zip_filename
     ) -> Tuple[bool, str]:
         """Download a single artwork. Designed for multiprocessing."""
-        url, save_path, order_id, artwork_id = artwork_data
+        url, save_path, order_id, artwork_id, task_id, zip_filename = artwork_data
 
         try:
             response = self.session.get(
@@ -138,23 +133,12 @@ class OrderSync:
             self.logger.info("No tasks to sync")
             return SyncResult(success=True, downloaded=0, failed=0, errors=[])
 
-        # Fallback: use agent-config if printing-tasks didn't return artwork path
-        if not self._artwork_network_path:
-            try:
-                agent_config = self.api_client.fetch_agent_config()
-                if agent_config.artwork_network_path:
-                    self.set_artwork_network_path(agent_config.artwork_network_path)
-                    self.logger.info(
-                        f"Using artwork path from agent config: {agent_config.artwork_network_path}"
-                    )
-            except Exception as e:
-                self.logger.warning(f"Could not fetch agent config for artwork path fallback: {e}")
+        # Use artwork path from config
+        artwork_path_config = self.config.ARTWORK_FOLDER
 
         # Log the artwork network path being used
-        if self._artwork_network_path:
-            self.logger.info(f"Using artwork network path: {self._artwork_network_path}")
-        else:
-            self.logger.warning("No artwork network path from API, falling back to config")
+        if artwork_path_config:
+            self.logger.info(f"Using artwork network path: {artwork_path_config}")
 
         # Group by material and delivery date
         grouped = self.group_by_material_and_date(tasks)
@@ -162,7 +146,7 @@ class OrderSync:
         # Prepare download list
         # Target pattern: {NETWORK_DRIVE_PREFIX}/{artworkNetworkPath}/{material_networkPath}-{date}/{filename}.ext
         prefix = (self.config.NETWORK_DRIVE_PREFIX or "").rstrip(os.sep)
-        artwork_path = (self._artwork_network_path or "").strip().lstrip(os.sep)
+        artwork_path = (artwork_path_config or "").strip().lstrip(os.sep)
 
         downloads = []
         for (material_network_path, delivery_date), material_tasks in grouped.items():
@@ -199,11 +183,19 @@ class OrderSync:
                     continue
 
                 task_has_multiple_artworks = len(task.artworks) > 1
-                task_folder_name = (
-                    generate_task_folder_name(task.order_id, task.task_id)
-                    if task_has_multiple_artworks
-                    else None
-                )
+                zip_filename = None
+
+                # For multi-artwork tasks, check if zip already exists before processing
+                if task_has_multiple_artworks:
+                    zip_filename = f"{task.task_id}-{task.order_id}.zip"
+                    zip_path = os.path.join(date_folder, zip_filename)
+                    if os.path.exists(zip_path):
+                        self.logger.debug(f"Skipping existing zip in artworks: {zip_path}")
+                        continue
+                    # Also check in user folders
+                    if self._file_exists_in_users and self._file_exists_in_users(zip_filename):
+                        self.logger.debug(f"Skipping existing zip in user folder: {zip_filename}")
+                        continue
 
                 for idx, artwork in enumerate(task.artworks):
                     if not artwork.uploadthing_url:
@@ -227,24 +219,19 @@ class OrderSync:
 
                     filename = f"{filename_base}{ext}"
 
-                    if task_folder_name:
-                        save_dir = os.path.join(date_folder, task_folder_name)
-                    else:
-                        save_dir = date_folder
-
-                    save_path = os.path.join(save_dir, filename)
+                    save_path = os.path.join(date_folder, filename)
 
                     if os.path.exists(save_path):
                         self.logger.debug(f"Skipping existing file: {save_path}")
                         continue
 
                     if self._file_exists_in_users and self._file_exists_in_users(filename):
-                        if task_folder_name:
-                            self._file_exists_in_users(os.path.join(task_folder_name, filename))
                         self.logger.debug(f"Skipping file in user folder: {filename}")
                         continue
 
-                    self._log_rename(os.path.basename(artwork.uploadthing_url), filename, save_dir)
+                    self._log_rename(
+                        os.path.basename(artwork.uploadthing_url), filename, date_folder
+                    )
 
                     downloads.append(
                         (
@@ -252,6 +239,8 @@ class OrderSync:
                             save_path,
                             task.order_id,
                             artwork.artwork_group_id,
+                            task.task_id,
+                            zip_filename,
                         )
                     )
 
@@ -267,6 +256,7 @@ class OrderSync:
         downloaded = 0
         failed = 0
         errors = []
+        task_zip_files: Dict[str, List[str]] = defaultdict(list)  # zip_path -> list of file paths
 
         with ThreadPoolExecutor(max_workers=min(self.config.MAX_WORKERS, cpu_count())) as executor:
             futures = {
@@ -275,13 +265,36 @@ class OrderSync:
 
             for future in as_completed(futures):
                 success, message = future.result()
+                download = futures[future]
                 if success:
                     downloaded += 1
                     self.logger.debug(message)
+                    # Track files for zipping
+                    if download[5]:  # zip_filename
+                        zip_path = os.path.join(os.path.dirname(download[1]), download[5])
+                        task_zip_files[zip_path].append(download[1])
                 else:
                     failed += 1
                     errors.append(message)
                     self.logger.error(message)
+
+        # Create zip files for multi-artwork tasks
+        for zip_path, file_paths in task_zip_files.items():
+            if len(file_paths) > 1:
+                try:
+                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+                        for file_path in file_paths:
+                            if os.path.exists(file_path):
+                                zipf.write(file_path, os.path.basename(file_path))
+                    self.logger.info(f"Created zip: {zip_path} with {len(file_paths)} files")
+                    # Delete individual files after zipping
+                    for file_path in file_paths:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                            self.logger.debug(f"Deleted original file: {file_path}")
+                except Exception as e:
+                    self.logger.error(f"Failed to create zip {zip_path}: {e}")
+                    errors.append(f"Failed to create zip {zip_path}: {e}")
 
         self.logger.info(f"Sync complete: {downloaded} downloaded, {failed} failed")
 

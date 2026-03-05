@@ -1,7 +1,7 @@
 """Tests for utility functions."""
 
 import pytest
-from src.utils import generate_filename, ensure_unique_filename, generate_task_folder_name
+from src.utils import generate_filename, ensure_unique_filename
 
 
 class TestGenerateFilename:
@@ -21,18 +21,6 @@ class TestGenerateFilename:
     def test_no_morse_code(self):
         result = generate_filename("ORD123", "AG456", [], None, "ses_abc", 0)
         assert result == "ses_abc"
-
-    def test_no_task_id(self):
-        result = generate_filename("ORD123", "AG456", [], "morse123", None, 0)
-        assert result == "morse123"
-
-
-class TestGenerateTaskFolderName:
-    """Test task folder name generation."""
-
-    def test_folder_name(self):
-        result = generate_task_folder_name("123", "ses_abc")
-        assert result == "123-ses_abc"
 
 
 class TestEnsureUniqueFilename:

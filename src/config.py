@@ -1,21 +1,7 @@
 """Configuration management for Print Agent."""
 
 import os
-import platform
 from dataclasses import dataclass
-from typing import Optional
-
-
-def get_default_data_dir() -> str:
-    """Get platform-appropriate data directory."""
-    system = platform.system()
-    if system == "Windows":
-        base = os.environ.get("PROGRAMDATA", "C:\\ProgramData")
-        return os.path.join(base, "PrintAgent")
-    elif system == "Darwin":
-        return os.path.expanduser("~/Library/Application Support/PrintAgent")
-    else:
-        return os.environ.get("XDG_DATA_HOME", "/var/lib/printagent")
 
 
 @dataclass
@@ -32,31 +18,33 @@ class AgentConfig:
     SYNC_INTERVAL_SECONDS: int = 60
     MAX_WORKERS: int = 10
     DOWNLOAD_TIMEOUT_SECONDS: int = 60
+    CONFIG_REFRESH_INTERVAL_SECONDS: int = 300
+
+    # File Watcher Configuration
+    FILE_EVENT_DEBOUNCE_SECONDS: float = 2.0
+    FILE_CLEANUP_INTERVAL_SECONDS: int = 30
 
     # Paths
-    OUTPUT_BASE_DIR: str = ""
-    LOG_DIR: str = ""
-    RENAME_LOG_DIR: str = ""
-    MOVEMENT_LOG_DIR: str = ""
-    HOT_FOLDERS_BASE: str = ""
     NETWORK_DRIVE_PREFIX: str = ""
+    ARTWORK_FOLDER: str = "artworks"
+    USERS_FOLDER: str = "users"
 
     # Service
     SERVICE_NAME: str = "PrintAgentSync"
 
+    # Log directories (set via __post_init__)
+    LOG_DIR: str = ""
+    RENAME_LOG_DIR: str = ""
+    MOVEMENT_LOG_DIR: str = ""
+
     def __post_init__(self) -> None:
         """Set default directories after initialization."""
-        data_dir = get_default_data_dir()
-        if not self.OUTPUT_BASE_DIR:
-            self.OUTPUT_BASE_DIR = os.path.join(data_dir, "output")
         if not self.LOG_DIR:
-            self.LOG_DIR = os.path.join(data_dir, "logs")
+            self.LOG_DIR = os.path.join(os.getcwd(), "logs")
         if not self.RENAME_LOG_DIR:
-            self.RENAME_LOG_DIR = os.path.join(data_dir, "logs", "renames")
+            self.RENAME_LOG_DIR = os.path.join(self.LOG_DIR, "renames")
         if not self.MOVEMENT_LOG_DIR:
-            self.MOVEMENT_LOG_DIR = os.path.join(data_dir, "logs", "movements")
-        if not self.HOT_FOLDERS_BASE:
-            self.HOT_FOLDERS_BASE = os.path.join(data_dir, "hotfolders")
+            self.MOVEMENT_LOG_DIR = os.path.join(self.LOG_DIR, "movements")
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -73,11 +61,22 @@ class AgentConfig:
             DOWNLOAD_TIMEOUT_SECONDS=int(
                 os.getenv("DOWNLOAD_TIMEOUT_SECONDS", str(cls.DOWNLOAD_TIMEOUT_SECONDS))
             ),
-            OUTPUT_BASE_DIR=os.getenv("OUTPUT_BASE_DIR", ""),
+            CONFIG_REFRESH_INTERVAL_SECONDS=int(
+                os.getenv(
+                    "CONFIG_REFRESH_INTERVAL_SECONDS", str(cls.CONFIG_REFRESH_INTERVAL_SECONDS)
+                )
+            ),
+            FILE_EVENT_DEBOUNCE_SECONDS=float(
+                os.getenv("FILE_EVENT_DEBOUNCE_SECONDS", str(cls.FILE_EVENT_DEBOUNCE_SECONDS))
+            ),
+            FILE_CLEANUP_INTERVAL_SECONDS=int(
+                os.getenv("FILE_CLEANUP_INTERVAL_SECONDS", str(cls.FILE_CLEANUP_INTERVAL_SECONDS))
+            ),
+            NETWORK_DRIVE_PREFIX=os.getenv("NETWORK_DRIVE_PREFIX", ""),
+            ARTWORK_FOLDER=os.getenv("ARTWORK_FOLDER", cls.ARTWORK_FOLDER),
+            USERS_FOLDER=os.getenv("USERS_FOLDER", cls.USERS_FOLDER),
+            SERVICE_NAME=os.getenv("SERVICE_NAME", cls.SERVICE_NAME),
             LOG_DIR=os.getenv("LOG_DIR", ""),
             RENAME_LOG_DIR=os.getenv("RENAME_LOG_DIR", ""),
             MOVEMENT_LOG_DIR=os.getenv("MOVEMENT_LOG_DIR", ""),
-            HOT_FOLDERS_BASE=os.getenv("HOT_FOLDERS_BASE", ""),
-            NETWORK_DRIVE_PREFIX=os.getenv("NETWORK_DRIVE_PREFIX", ""),
-            SERVICE_NAME=os.getenv("SERVICE_NAME", cls.SERVICE_NAME),
         )

@@ -18,30 +18,27 @@ class SyncService:
 
     def __init__(self, config: AgentConfig, logger: Optional[logging.Logger] = None):
         self.config = config
-        self.logger = logger or setup_logging("sync_service", config.LOG_DIR)
+        self.logger = logger or setup_logging("sync_service", self.config.LOG_DIR)
 
         # Shutdown handling
-        self.shutdown_event = get_shutdown_event(config.SERVICE_NAME)
+        self.shutdown_event = get_shutdown_event(self.config.SERVICE_NAME)
 
         # Track network paths for watching
         self._network_paths: List[str] = []
-        self._artwork_network_path: Optional[str] = None
-        self._user_network_path: Optional[str] = None
         self._last_config_refresh = 0
-        self._config_refresh_interval = 300
 
         # Create API client
         self.api_client = APIClient(
-            base_url=config.API_BASE_URL,
-            api_key=config.API_KEY,
-            organisation_id=config.ORGANISATION_ID,
-            uploadthing_app_id=config.UPLOADTHING_APP_ID,
+            base_url=self.config.API_BASE_URL,
+            api_key=self.config.API_KEY,
+            organisation_id=self.config.ORGANISATION_ID,
+            uploadthing_app_id=self.config.UPLOADTHING_APP_ID,
             logger=self.logger,
         )
 
         # Create components (order_sync uses filesystem check for skip logic)
         self.order_sync = OrderSync(
-            config,
+            self.config,
             self.api_client,
             self.logger,
             file_exists_in_users=self._file_exists_in_users,
@@ -55,12 +52,18 @@ class SyncService:
         """Resolve task_id from order_id and artwork_group_id."""
         return self._task_id_lookup.get((order_id, artwork_group_id))
 
+    def _build_watch_path(self, prefix: str, folder: str) -> str:
+        """Build full watch path from prefix and folder."""
+        if prefix:
+            return os.path.join(prefix, folder)
+        return folder
+
     def _file_exists_in_users(self, filename: str) -> bool:
         """Return True if filename exists under users folder (filesystem as source of truth)."""
-        if not self._user_network_path or not self.config.NETWORK_DRIVE_PREFIX:
+        if not self.config.USERS_FOLDER or not self.config.NETWORK_DRIVE_PREFIX:
             return False
         prefix = (self.config.NETWORK_DRIVE_PREFIX or "").rstrip(os.sep)
-        users_base = os.path.join(prefix, self._user_network_path)
+        users_base = os.path.join(prefix, self.config.USERS_FOLDER)
         if not os.path.isdir(users_base):
             return False
         for p in Path(users_base).rglob(filename):
@@ -76,34 +79,13 @@ class SyncService:
         - userNetworkPath: the folder path for user-related files
         """
         now = time.time()
-        if now - self._last_config_refresh < self._config_refresh_interval:
+        if now - self._last_config_refresh < self.config.CONFIG_REFRESH_INTERVAL_SECONDS:
             return
 
         try:
             # Fetch tasks and extract network paths from response
             response = self.api_client.fetch_tasks()
             tasks = response.tasks
-
-            def extract_folder_name(path: Optional[str]) -> Optional[str]:
-                if not path:
-                    return None
-                p = path.strip().lstrip(os.sep).rstrip(os.sep)
-                return p or os.path.basename(path)
-
-            # Use the top-level network paths from the API response
-            self._artwork_network_path = extract_folder_name(response.artwork_network_path) or None
-            self._user_network_path = extract_folder_name(response.user_network_path) or None
-
-            # Fallback: use agent-config if printing-tasks didn't return paths
-            if not self._artwork_network_path or not self._user_network_path:
-                try:
-                    agent_config = self.api_client.fetch_agent_config()
-                    if not self._artwork_network_path and agent_config.artwork_network_path:
-                        self._artwork_network_path = agent_config.artwork_network_path.strip()
-                    if not self._user_network_path and agent_config.user_network_path:
-                        self._user_network_path = agent_config.user_network_path.strip()
-                except Exception as e:
-                    self.logger.warning(f"Could not fetch agent config for path fallback: {e}")
 
             # Per-task material paths (used for reference; watch paths use artwork/user)
             unique_paths = set()
@@ -119,8 +101,8 @@ class SyncService:
             self._last_config_refresh = now
 
             self.logger.info(
-                f"Refreshed network paths: artwork={self._artwork_network_path}, "
-                f"user={self._user_network_path}, material paths={len(self._network_paths)}"
+                f"Refreshed network paths: artwork={self.config.ARTWORK_FOLDER}, "
+                f"user={self.config.USERS_FOLDER}, material paths={len(self._network_paths)}"
             )
         except Exception as e:
             self.logger.error(f"Failed to refresh network paths: {e}")
@@ -129,8 +111,8 @@ class SyncService:
         """Initialize folder structure for users.
 
         Creates:
-        - {NETWORK_DRIVE_PREFIX}/{userNetworkPath}/
-        - {NETWORK_DRIVE_PREFIX}/{userNetworkPath}/{first_name} {last_name}/ for each user
+        - {NETWORK_DRIVE_PREFIX}/{USERS_FOLDER}/
+        - {NETWORK_DRIVE_PREFIX}/{USERS_FOLDER}/{user_id}-{first_name} {last_name}/ for each user
         """
         if not self.config.NETWORK_DRIVE_PREFIX:
             self.logger.warning(
@@ -139,13 +121,10 @@ class SyncService:
             return
 
         try:
-            agent_config = self.api_client.fetch_agent_config()
-            user_network_path = agent_config.user_network_path
+            user_network_path = self.config.USERS_FOLDER
 
             if not user_network_path:
-                self.logger.warning(
-                    "userNetworkPath not found in agent config, skipping folder initialization"
-                )
+                self.logger.warning("USERS_FOLDER not configured, skipping folder initialization")
                 return
 
             base_path = os.path.join(self.config.NETWORK_DRIVE_PREFIX, user_network_path)
@@ -178,17 +157,11 @@ class SyncService:
         prefix = (self.config.NETWORK_DRIVE_PREFIX or "").rstrip(os.sep)
         watch_paths = []
 
-        if self._artwork_network_path:
-            full_path = (
-                os.path.join(prefix, self._artwork_network_path)
-                if prefix
-                else self._artwork_network_path
-            )
+        if self.config.ARTWORK_FOLDER:
+            full_path = self._build_watch_path(prefix, self.config.ARTWORK_FOLDER)
             watch_paths.append(full_path)
-        if self._user_network_path:
-            full_path = (
-                os.path.join(prefix, self._user_network_path) if prefix else self._user_network_path
-            )
+        if self.config.USERS_FOLDER:
+            full_path = self._build_watch_path(prefix, self.config.USERS_FOLDER)
             watch_paths.append(full_path)
 
         if not watch_paths:
@@ -196,11 +169,8 @@ class SyncService:
             return
 
         user_paths = []
-        if self._user_network_path:
-            up = (
-                os.path.join(prefix, self._user_network_path) if prefix else self._user_network_path
-            )
-            user_paths.append(up)
+        if self.config.USERS_FOLDER:
+            user_paths.append(self._build_watch_path(prefix, self.config.USERS_FOLDER))
 
         self.file_watcher = FileWatcher(
             self.api_client,
@@ -209,6 +179,7 @@ class SyncService:
             movement_log_dir=self.config.MOVEMENT_LOG_DIR,
             logger=self.logger,
             get_task_id=self.get_task_id,
+            debounce_seconds=self.config.FILE_EVENT_DEBOUNCE_SECONDS,
         )
         self.file_watcher.start()
 

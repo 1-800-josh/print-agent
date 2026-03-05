@@ -36,11 +36,6 @@ def generate_filename(
     return base_name
 
 
-def generate_task_folder_name(order_id: str, task_id: str) -> str:
-    """Generate folder name for a task with multiple images."""
-    return f"{task_id}-{order_id}"
-
-
 def ensure_unique_filename(directory: str, filename: str, extension: str = ".png") -> str:
     """Ensure filename is unique by appending counter if needed."""
     base_path = os.path.join(directory, f"{filename}{extension}")

@@ -1,13 +1,12 @@
 """Tests for API client."""
 
 import pytest
-from unittest.mock import Mock, patch, call
+from unittest.mock import Mock, patch
 from src.api_client import (
     APIClient,
     PrintingTask,
     ArtworkInfo,
     TasksResponse,
-    AgentConfigResponse,
     User,
 )
 
@@ -32,29 +31,25 @@ class TestAPIClient:
         client.session = mock_session
 
         mock_response = Mock()
-        mock_response.json.return_value = {
-            "tasks": [
-                {
-                    "id": "task-1",
-                    "orderId": "order-1",
-                    "relatedMaterialName": "Vinyl",
-                    "deliveryDate": "2024-03-15",
-                    "taskState": "PENDING",
-                    "networkPath": "//server/share",
-                    "artworks": [
-                        {
-                            "artwork_group_id": "ag-1",
-                            "image_id": "img-1",
-                            "id": "artwork-1",
-                            "option_values": ["A", "B"],
-                        }
-                    ],
-                    "morseCode": "morse123",
-                }
-            ],
-            "artworkNetworkPath": "//server/share/artworks",
-            "userNetworkPath": "//server/share/users",
-        }
+        mock_response.json.return_value = [
+            {
+                "id": "task-1",
+                "orderId": "order-1",
+                "relatedMaterialName": "Vinyl",
+                "deliveryDate": "2024-03-15",
+                "taskState": "PENDING",
+                "networkPath": "//server/share",
+                "artworks": [
+                    {
+                        "artwork_group_id": "ag-1",
+                        "image_id": "img-1",
+                        "id": "artwork-1",
+                        "option_values": ["A", "B"],
+                    }
+                ],
+                "morseCode": "morse123",
+            }
+        ]
         mock_response.raise_for_status = Mock()
         mock_session.get.return_value = mock_response
 
@@ -65,35 +60,8 @@ class TestAPIClient:
         assert response.tasks[0].task_id == "task-1"
         assert response.tasks[0].order_id == "order-1"
         assert response.tasks[0].network_path == "//server/share"
-        assert response.artwork_network_path == "//server/share/artworks"
-        assert response.user_network_path == "//server/share/users"
         mock_session.get.assert_called_once_with(
             "http://test.com/api/organisations/org-123/print-agent/printing-tasks",
-            timeout=30,
-        )
-
-    @patch("src.api_client.requests.Session")
-    def test_fetch_agent_config(self, mock_session_class, client):
-        """Test fetching agent config from API."""
-        mock_session = Mock()
-        mock_session_class.return_value = mock_session
-        client.session = mock_session
-
-        mock_response = Mock()
-        mock_response.json.return_value = {
-            "artworksNetworkPath": "artworks",
-            "usersNetworkPath": "users",
-        }
-        mock_response.raise_for_status = Mock()
-        mock_session.get.return_value = mock_response
-
-        response = client.fetch_agent_config()
-
-        assert isinstance(response, AgentConfigResponse)
-        assert response.artwork_network_path == "artworks"
-        assert response.user_network_path == "users"
-        mock_session.get.assert_called_once_with(
-            "http://test.com/api/organisations/org-123/print-agent/agent-config",
             timeout=30,
         )
 
