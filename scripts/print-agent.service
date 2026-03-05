@@ -1,0 +1,20 @@
+[Unit]
+Description=Print Agent Sync Service
+After=network.target
+
+[Service]
+Type=simple
+User=printagent
+Group=printagent
+WorkingDirectory=/opt/print-agent
+Environment=PYTHONPATH=/opt/print-agent
+EnvironmentFile=/opt/print-agent/.env
+ExecStart=/opt/print-agent/venv/bin/python main.py service
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=print-agent
+
+[Install]
+WantedBy=multi-user.target
