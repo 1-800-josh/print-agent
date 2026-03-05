@@ -404,12 +404,14 @@ class HotFolderEventHandler(FileSystemEventHandler):
             self._debouncer.trigger("moved_in", file_path)
 
     def on_deleted(self, event: FileSystemEvent) -> None:
-        """Handle file deleted event."""
-        if event.is_directory:
+        """Handle file/folder deleted event."""
+        file_path = event.src_path
+
+        if not any(str(file_path).startswith(np) for np in self.network_paths):
             return
 
-        file_path = event.src_path
-        if not any(str(file_path).startswith(np) for np in self.network_paths):
+        if event.is_directory:
+            self._handle_folder_deleted(file_path)
             return
 
         if self._is_in_user_folder(file_path):
@@ -417,6 +419,40 @@ class HotFolderEventHandler(FileSystemEventHandler):
         else:
             filename = os.path.basename(file_path)
             self._recent_artwork_deletions[filename] = (str(file_path), time.time())
+
+    def _handle_folder_deleted(self, folder_path: str) -> None:
+        """Handle folder deleted from user folder - treat as completed."""
+        user_info = self._extract_user_info(folder_path)
+        if not user_info:
+            return
+
+        user_id = user_info["user_id"]
+        user_name = user_info["user_name"]
+
+        # Extract folder name (last part of path)
+        folder_name = os.path.basename(folder_path)
+
+        # Parse folder name: {task_id}-{order_id}
+        parts = folder_name.split("-")
+        if len(parts) < 2:
+            self.logger.warning(f"Cannot parse folder name: {folder_name}")
+            return
+
+        task_id = parts[0]
+        order_id = parts[1]
+
+        self.logger.info(
+            f"Folder deleted from user folder: {folder_path} (user: {user_name}, task: {task_id})"
+        )
+        if self.movement_logger:
+            self.movement_logger.info(
+                f"Folder deleted (completed): {folder_path} (user: {user_name}, task: {task_id})"
+            )
+
+        if user_id and self.api_client.complete_task(task_id, user_id):
+            if folder_path in self._folder_users:
+                del self._folder_users[folder_path]
+            self.logger.info(f"Completed task {task_id} by user {user_name}")
 
     def process_pending(self) -> None:
         """Process pending debounced events."""
