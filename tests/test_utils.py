@@ -9,18 +9,18 @@ class TestGenerateFilename:
 
     def test_single_image_with_task_id(self):
         result = generate_filename("ORD123", "AG456", ["A", "B"], "morse123", "ses_abc", 0)
-        assert result == "ses_abc-morse123"
+        assert result == "ses_abc-ORD123-morse123"
 
     def test_multiple_images(self):
         result = generate_filename("ORD123", "AG456", ["A", "B"], "morse123", "ses_abc", 1)
-        assert result == "ses_abc-morse123_image_1"
+        assert result == "ses_abc-ORD123-morse123_image_1"
 
         result = generate_filename("ORD123", "AG456", ["A", "B"], "morse123", "ses_abc", 2)
-        assert result == "ses_abc-morse123_image_2"
+        assert result == "ses_abc-ORD123-morse123_image_2"
 
     def test_no_morse_code(self):
         result = generate_filename("ORD123", "AG456", [], None, "ses_abc", 0)
-        assert result == "ses_abc"
+        assert result == "ses_abc-ORD123"
 
 
 class TestEnsureUniqueFilename:

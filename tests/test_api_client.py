@@ -31,25 +31,27 @@ class TestAPIClient:
         client.session = mock_session
 
         mock_response = Mock()
-        mock_response.json.return_value = [
-            {
-                "id": "task-1",
-                "orderId": "order-1",
-                "relatedMaterialName": "Vinyl",
-                "deliveryDate": "2024-03-15",
-                "taskState": "PENDING",
-                "networkPath": "//server/share",
-                "artworks": [
-                    {
-                        "artwork_group_id": "ag-1",
-                        "image_id": "img-1",
-                        "id": "artwork-1",
-                        "option_values": ["A", "B"],
-                    }
-                ],
-                "morseCode": "morse123",
-            }
-        ]
+        mock_response.json.return_value = {
+            "tasks": [
+                {
+                    "id": "task-1",
+                    "orderId": "order-1",
+                    "relatedMaterialName": "Vinyl",
+                    "deliveryDate": "2024-03-15",
+                    "taskState": "PENDING",
+                    "networkPath": "//server/share",
+                    "artworks": [
+                        {
+                            "artwork_group_id": "ag-1",
+                            "image_id": "img-1",
+                            "id": "artwork-1",
+                            "option_values": ["A", "B"],
+                        }
+                    ],
+                    "morseCode": "morse123",
+                }
+            ]
+        }
         mock_response.raise_for_status = Mock()
         mock_session.get.return_value = mock_response
 
@@ -73,10 +75,12 @@ class TestAPIClient:
         client.session = mock_session
 
         mock_response = Mock()
-        mock_response.json.return_value = [
-            {"id": "user-1", "firstName": "Jane", "lastName": "Doe"},
-            {"id": "user-2", "firstName": "Mike", "lastName": "Miller"},
-        ]
+        mock_response.json.return_value = {
+            "users": [
+                {"id": "user-1", "firstName": "Jane", "lastName": "Doe"},
+                {"id": "user-2", "firstName": "Mike", "lastName": "Miller"},
+            ]
+        }
         mock_response.raise_for_status = Mock()
         mock_session.get.return_value = mock_response
 
@@ -132,3 +136,33 @@ class TestAPIClient:
 
         assert result is True
         mock_session.post.assert_called_once()
+
+    @patch("src.api_client.requests.Session")
+    def test_unassign_task(self, mock_session_class, client):
+        """Test unassigning a task."""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+        client.session = mock_session
+
+        mock_response = Mock()
+        mock_response.raise_for_status = Mock()
+        mock_session.post.return_value = mock_response
+
+        result = client.unassign_task("task-1")
+
+        assert result is True
+        mock_session.post.assert_called_once()
+        call_kwargs = mock_session.post.call_args[1]
+        assert call_kwargs["json"]["task_ids"] == ["task-1"]
+
+    @patch("src.api_client.requests.Session")
+    def test_assign_task_empty_task_ids(self, mock_session_class, client):
+        """Test assign_task with empty task_ids returns False and does not POST."""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+        client.session = mock_session
+
+        result = client.assign_task(task_ids=[])
+
+        assert result is False
+        mock_session.post.assert_not_called()
