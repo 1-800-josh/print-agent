@@ -95,6 +95,14 @@ class HotFolderEventHandler(FileSystemEventHandler):
         ] = {}  # filename -> (dest_path, timestamp)
         self._moved_folder_contents: Dict[str, List[str]] = {}  # dest_folder -> list of file paths
 
+    def is_pending_artwork_move(self, filename: str) -> bool:
+        """Return True if filename was recently deleted from artwork (move in progress)."""
+        entry = self._recent_artwork_deletions.get(filename)
+        if not entry:
+            return False
+        _, ts = entry
+        return time.time() - ts < self._recent_event_threshold
+
     def _extract_task_info(self, file_path: str) -> Optional[Dict[str, Optional[str]]]:
         """Extract order_id and task_id from filename.
 
@@ -583,6 +591,12 @@ class FileWatcher:
         """Process pending events. Call periodically."""
         if self.handler:
             self.handler.process_pending()
+
+    def is_pending_artwork_move(self, filename: str) -> bool:
+        """Return True if filename was recently deleted from artwork (move in progress)."""
+        if not self.handler:
+            return False
+        return self.handler.is_pending_artwork_move(filename)
 
     def is_running(self) -> bool:
         """Check if watcher is running."""

@@ -42,6 +42,7 @@ class SyncService:
             self.api_client,
             self.logger,
             file_exists_in_users=self._file_exists_in_users,
+            should_skip_artwork_download=self._should_skip_artwork_download,
         )
         self.file_watcher: Optional[FileWatcher] = None
         self._task_id_lookup: Dict[
@@ -70,6 +71,12 @@ class SyncService:
             if p.is_file():
                 return True
         return False
+
+    def _should_skip_artwork_download(self, filename: str) -> bool:
+        """Return True if filename was recently deleted from artwork (move in progress)."""
+        if not self.file_watcher or not self.file_watcher.is_running():
+            return False
+        return self.file_watcher.is_pending_artwork_move(filename)
 
     def _refresh_network_paths(self) -> None:
         """Refresh network paths from synced tasks.

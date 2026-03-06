@@ -36,11 +36,13 @@ class OrderSync:
         api_client: APIClient,
         logger: Optional[logging.Logger] = None,
         file_exists_in_users: Optional[Callable[[str], bool]] = None,
+        should_skip_artwork_download: Optional[Callable[[str], bool]] = None,
     ):
         self.config = config
         self.api_client = api_client
         self.logger = logger or logging.getLogger(__name__)
         self._file_exists_in_users = file_exists_in_users
+        self._should_skip_artwork_download = should_skip_artwork_download
         self.session = requests.Session()
         self.session.headers.update({"x-api-key": self.config.API_KEY})
         self._rename_logger = self._setup_rename_logger()
@@ -196,6 +198,10 @@ class OrderSync:
                     if self._file_exists_in_users and self._file_exists_in_users(zip_filename):
                         self.logger.debug(f"Skipping existing zip in user folder: {zip_filename}")
                         continue
+                    # Skip if pending move (delete-then-create race)
+                    if self._should_skip_artwork_download and self._should_skip_artwork_download(zip_filename):
+                        self.logger.debug(f"Skipping zip (pending move): {zip_filename}")
+                        continue
 
                 for idx, artwork in enumerate(task.artworks):
                     if not artwork.uploadthing_url:
@@ -227,6 +233,10 @@ class OrderSync:
 
                     if self._file_exists_in_users and self._file_exists_in_users(filename):
                         self.logger.debug(f"Skipping file in user folder: {filename}")
+                        continue
+                    # Skip if pending move (delete-then-create race)
+                    if self._should_skip_artwork_download and self._should_skip_artwork_download(filename):
+                        self.logger.debug(f"Skipping file (pending move): {filename}")
                         continue
 
                     self._log_rename(
