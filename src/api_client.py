@@ -34,6 +34,7 @@ class PrintingTask:
     network_path: Optional[str]
     artworks: List[ArtworkInfo] = field(default_factory=list)
     morse_code: Optional[str] = None
+    assigned_user_id: Optional[str] = None  # from internalUserId
 
 
 @dataclass
@@ -164,6 +165,9 @@ class APIClient:
                         )
                     )
 
+                uid = item.get("internalUserId")
+                assigned_user_id = str(uid) if uid is not None else None
+
                 tasks.append(
                     PrintingTask(
                         task_id=item.get("id", ""),
@@ -174,6 +178,7 @@ class APIClient:
                         network_path=item.get("networkPath"),
                         artworks=artworks,
                         morse_code=item.get("morseCode"),
+                        assigned_user_id=assigned_user_id,
                     )
                 )
 
@@ -257,7 +262,7 @@ class APIClient:
         try:
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
-            payload = self._parse_response(response)
+            payload = self._parse_response(response, expected_type="list")
 
             if isinstance(payload, list):
                 users_data = payload

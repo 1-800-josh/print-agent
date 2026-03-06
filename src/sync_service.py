@@ -2,11 +2,12 @@
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from src.api_client import APIClient
+from src.api_client import APIClient, PrintingTask
 from src.config import AgentConfig
 from src.file_watcher import FileWatcher
 from src.order_sync import OrderSync
@@ -26,6 +27,7 @@ class SyncService:
         # Track network paths for watching
         self._network_paths: List[str] = []
         self._last_config_refresh = 0
+        self._tasks: List[PrintingTask] = []
 
         # Create API client
         self.api_client = APIClient(
@@ -78,7 +80,169 @@ class SyncService:
             return False
         return self.file_watcher.is_pending_artwork_move(filename)
 
-    def _refresh_network_paths(self) -> None:
+    def _extract_task_id_from_filename(self, filename: str) -> Optional[str]:
+        """Extract task_id from filename. Format: {task_id}-{order_id}[-...].ext or {task_id}-{order_id}.zip"""
+        name, _ = os.path.splitext(filename)
+        if not name:
+            return None
+        if "_image_" in name:
+            base_part = name.split("_image_")[0]
+        else:
+            base_part = name
+        parts = base_part.split("-")
+        return parts[0] if len(parts) >= 2 else None
+
+    def _is_artwork_or_zip_file(self, filename: str) -> bool:
+        """Return True if file is an artwork or zip we track."""
+        ext = os.path.splitext(filename)[1].lower()
+        return ext in (".png", ".jpg", ".jpeg", ".pdf", ".zip")
+
+    def _is_material_date_subfolder(self, folder_name: str) -> bool:
+        """Return True if folder matches {material}_{YYYYMMDD} pattern."""
+        return bool(re.match(r".+_\d{8}$", folder_name))
+
+    def _extract_user_id_from_folder(self, folder_name: str) -> Optional[str]:
+        """Extract user_id from folder name. Format: {user_id}-{user_name}"""
+        if "-" in folder_name:
+            return folder_name[: folder_name.index("-")]
+        return folder_name if folder_name else None
+
+    def _build_fs_state(
+        self,
+    ) -> Dict[str, Tuple[Optional[str], List[str]]]:
+        """Build filesystem state: task_id -> (assigned_user_id or None, list of file paths)."""
+        fs_state: Dict[str, Tuple[Optional[str], List[str]]] = {}
+        prefix = (self.config.NETWORK_DRIVE_PREFIX or "").rstrip(os.sep)
+        if not prefix:
+            return fs_state
+
+        # Scan material_date subfolders under artworks
+        if self.config.ARTWORK_FOLDER:
+            artworks_base = os.path.join(prefix, self.config.ARTWORK_FOLDER)
+            if os.path.isdir(artworks_base):
+                for subdir in Path(artworks_base).iterdir():
+                    if subdir.is_dir() and self._is_material_date_subfolder(subdir.name):
+                        for f in subdir.iterdir():
+                            if f.is_file() and self._is_artwork_or_zip_file(f.name):
+                                task_id = self._extract_task_id_from_filename(f.name)
+                                if task_id:
+                                    path_str = str(f)
+                                    if task_id not in fs_state:
+                                        fs_state[task_id] = (None, [])
+                                    fs_state[task_id][1].append(path_str)
+
+        # Scan user subfolders under users (overwrites artworks entry if same task in user folder)
+        if self.config.USERS_FOLDER:
+            users_base = os.path.join(prefix, self.config.USERS_FOLDER)
+            if os.path.isdir(users_base):
+                for user_subdir in Path(users_base).iterdir():
+                    if user_subdir.is_dir():
+                        user_id = self._extract_user_id_from_folder(user_subdir.name)
+                        if user_id:
+                            for f in user_subdir.iterdir():
+                                if f.is_file() and self._is_artwork_or_zip_file(f.name):
+                                    task_id = self._extract_task_id_from_filename(f.name)
+                                    if task_id:
+                                        path_str = str(f)
+                                        if task_id not in fs_state or fs_state[task_id][0] != user_id:
+                                            fs_state[task_id] = (user_id, [])
+                                        fs_state[task_id][1].append(path_str)
+
+        return fs_state
+
+    def _reconcile_task_states(self) -> None:
+        """Reconcile file locations with task state in DB. Filesystem is source of truth."""
+        if not self.config.RECONCILE_TASK_STATES or not self.config.NETWORK_DRIVE_PREFIX:
+            return
+        if not self._tasks:
+            return
+
+        fs_state = self._build_fs_state()
+        task_by_id = {t.task_id: t for t in self._tasks}
+        assigned_count = 0
+        unassigned_count = 0
+        removed_count = 0
+
+        for task in self._tasks:
+            task_id = task.task_id
+            db_assigned = task.assigned_user_id
+            db_completed = task.status.upper() == "COMPLETED"
+            fs_entry = fs_state.get(task_id)
+
+            if db_completed and fs_entry:
+                # File exists but task completed -> remove file
+                _, paths = fs_entry
+                for path in paths:
+                    try:
+                        os.remove(path)
+                        removed_count += 1
+                        self.logger.info(f"Removed stale file (task completed): {path}")
+                    except OSError as e:
+                        self.logger.warning(f"Failed to remove stale file {path}: {e}")
+                continue
+
+            if fs_entry:
+                fs_user_id, paths = fs_entry
+                if fs_user_id and fs_user_id != db_assigned:
+                    if self.api_client.assign_task(task_ids=[task_id], user_id=fs_user_id):
+                        assigned_count += 1
+                        self.logger.info(f"Reconciled: assigned task {task_id} to user {fs_user_id}")
+                elif not fs_user_id and db_assigned:
+                    if self.api_client.unassign_task(task_id):
+                        unassigned_count += 1
+                        self.logger.info(f"Reconciled: unassigned task {task_id}")
+            else:
+                # File not found
+                if db_assigned:
+                    if self.api_client.unassign_task(task_id):
+                        unassigned_count += 1
+                        self.logger.info(
+                            f"Task {task_id} assigned to user {db_assigned} but file not found; unassigned"
+                        )
+
+        if assigned_count or unassigned_count or removed_count:
+            self.logger.info(
+                f"Reconciled: {assigned_count} assigned, {unassigned_count} unassigned, {removed_count} files removed"
+            )
+
+    def _cleanup_empty_artwork_folders(self) -> None:
+        """Remove empty material_date subfolders under artworks."""
+        if not self.config.CLEANUP_EMPTY_ARTWORK_FOLDERS or not self.config.NETWORK_DRIVE_PREFIX:
+            self.logger.debug("Cleanup skipped: CLEANUP_EMPTY_ARTWORK_FOLDERS=%s or no NETWORK_DRIVE_PREFIX", self.config.CLEANUP_EMPTY_ARTWORK_FOLDERS)
+            return
+        if not self.config.ARTWORK_FOLDER:
+            return
+
+        prefix = (self.config.NETWORK_DRIVE_PREFIX or "").rstrip(os.sep)
+        artworks_base = os.path.join(prefix, self.config.ARTWORK_FOLDER)
+        if not os.path.isdir(artworks_base):
+            self.logger.debug("Cleanup skipped: artworks_base not a dir: %s", artworks_base)
+            return
+
+        removed = 0
+        IGNORED_ENTRIES = {".DS_Store", "Thumbs.db", ".Spotlight-V100", ".Trashes"}
+        for subdir in list(Path(artworks_base).iterdir()):
+            if not subdir.is_dir() or not self._is_material_date_subfolder(subdir.name):
+                continue
+            try:
+                entries = list(subdir.iterdir())
+                significant = [e for e in entries if e.name not in IGNORED_ENTRIES and not e.name.startswith(".")]
+                if not significant:
+                    for e in entries:
+                        try:
+                            e.unlink()
+                        except OSError:
+                            pass
+                    subdir.rmdir()
+                    removed += 1
+                    self.logger.info(f"Removed empty artwork folder: {subdir}")
+            except OSError as e:
+                self.logger.warning("Could not remove folder %s: %s", subdir, e)
+
+        if removed:
+            self.logger.info(f"Cleaned up {removed} empty artwork folder(s)")
+
+    def _refresh_network_paths(self, force: bool = False) -> None:
         """Refresh network paths from synced tasks.
 
         Network paths are now returned at the top level of the API response:
@@ -86,13 +250,14 @@ class SyncService:
         - userNetworkPath: the folder path for user-related files
         """
         now = time.time()
-        if now - self._last_config_refresh < self.config.CONFIG_REFRESH_INTERVAL_SECONDS:
+        if not force and now - self._last_config_refresh < self.config.CONFIG_REFRESH_INTERVAL_SECONDS:
             return
 
         try:
             # Fetch tasks and extract network paths from response
             response = self.api_client.fetch_tasks()
             tasks = response.tasks
+            self._tasks = tasks
 
             # Per-task material paths (used for reference; watch paths use artwork/user)
             unique_paths = set()
@@ -195,6 +360,16 @@ class SyncService:
         self.logger.info("Starting sync cycle")
 
         try:
+            # 1. Refresh paths / fetch tasks (need fresh data for reconciliation)
+            self._refresh_network_paths(force=True)
+
+            # 2. Reconcile task states (fs vs DB)
+            self._reconcile_task_states()
+
+            # 3. Clean empty artwork folders
+            self._cleanup_empty_artwork_folders()
+
+            # 4. Order sync (download new files)
             result = self.order_sync.sync_orders()
 
             if result.success:
@@ -207,9 +382,6 @@ class SyncService:
                 )
                 for error in result.errors[:5]:  # Log first 5 errors
                     self.logger.error(f"  - {error}")
-
-            # Refresh network paths after sync
-            self._refresh_network_paths()
 
         except Exception as e:
             self.logger.exception(f"Error in sync cycle: {e}")

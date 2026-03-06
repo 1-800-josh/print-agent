@@ -40,6 +40,7 @@ class TestAPIClient:
                     "deliveryDate": "2024-03-15",
                     "taskState": "PENDING",
                     "networkPath": "//server/share",
+                    "internalUserId": 12345,
                     "artworks": [
                         {
                             "artwork_group_id": "ag-1",
@@ -62,6 +63,7 @@ class TestAPIClient:
         assert response.tasks[0].task_id == "task-1"
         assert response.tasks[0].order_id == "order-1"
         assert response.tasks[0].network_path == "//server/share"
+        assert response.tasks[0].assigned_user_id == "12345"
         mock_session.get.assert_called_once_with(
             "http://test.com/api/organisations/org-123/print-agent/printing-tasks",
             timeout=30,

@@ -24,6 +24,10 @@ class AgentConfig:
     FILE_EVENT_DEBOUNCE_SECONDS: float = 2.0
     FILE_CLEANUP_INTERVAL_SECONDS: int = 30
 
+    # Reconciliation
+    RECONCILE_TASK_STATES: bool = True
+    CLEANUP_EMPTY_ARTWORK_FOLDERS: bool = True
+
     # Paths
     NETWORK_DRIVE_PREFIX: str = ""
     ARTWORK_FOLDER: str = "artworks"
@@ -72,6 +76,10 @@ class AgentConfig:
             FILE_CLEANUP_INTERVAL_SECONDS=int(
                 os.getenv("FILE_CLEANUP_INTERVAL_SECONDS", str(cls.FILE_CLEANUP_INTERVAL_SECONDS))
             ),
+            RECONCILE_TASK_STATES=os.getenv("RECONCILE_TASK_STATES", "true").lower()
+            in ("true", "1", "yes"),
+            CLEANUP_EMPTY_ARTWORK_FOLDERS=os.getenv("CLEANUP_EMPTY_ARTWORK_FOLDERS", "true").lower()
+            in ("true", "1", "yes"),
             NETWORK_DRIVE_PREFIX=os.getenv("NETWORK_DRIVE_PREFIX", ""),
             ARTWORK_FOLDER=os.getenv("ARTWORK_FOLDER", cls.ARTWORK_FOLDER),
             USERS_FOLDER=os.getenv("USERS_FOLDER", cls.USERS_FOLDER),

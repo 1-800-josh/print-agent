@@ -443,7 +443,7 @@ class HotFolderEventHandler(FileSystemEventHandler):
             self._recent_artwork_deletions[filename] = (str(file_path), time.time())
 
     def _handle_zip_deleted(self, file_path: str) -> None:
-        """Handle zip file deleted from user folder - treat as completed."""
+        """Handle zip file deleted from user folder - treat as completed or moved out."""
         user_info = self._extract_user_info(file_path)
         if not user_info:
             return
@@ -467,18 +467,52 @@ class HotFolderEventHandler(FileSystemEventHandler):
         task_id = parts[0]
         order_id = parts[1]
 
-        self.logger.info(
-            f"Zip deleted from user folder: {file_path} (user: {user_name}, task: {task_id})"
-        )
-        if self.movement_logger:
-            self.movement_logger.info(
-                f"Zip deleted (completed): {file_path} (user: {user_name}, task: {task_id})"
+        # Check if moved_out is pending (on_moved fired) - don't complete, let unassign handle it
+        moved_out_key = f"moved_out:{file_path}"
+        if moved_out_key in self._debouncer._pending_events:
+            self.logger.info(
+                f"Zip moved from user folder (moved_out pending): {file_path} -> skip complete, unassign will handle"
             )
+            return
 
-        if user_id and self.api_client.complete_task(task_id, user_id):
-            if file_path in self._file_users:
-                del self._file_users[file_path]
-            self.logger.info(f"Completed task {task_id} by user {user_name}")
+        # Check if file was moved to artworks (copy+delete move). If file exists in artworks, unassign.
+        artworks_roots = self.network_paths - self.user_paths
+        file_in_artworks = False
+        for root in artworks_roots:
+            root_path = Path(root)
+            if root_path.is_dir():
+                for p in root_path.rglob(filename):
+                    if p.is_file():
+                        file_in_artworks = True
+                        break
+            if file_in_artworks:
+                break
+
+        if file_in_artworks:
+            self.logger.info(
+                f"Zip moved from user folder to artworks: {file_path} -> unassigning task {task_id}"
+            )
+            if self.movement_logger:
+                self.movement_logger.info(
+                    f"Zip moved out (unassign): {file_path} (was user: {user_id}, task: {task_id})"
+                )
+            if self.api_client.unassign_task(task_id):
+                if file_path in self._file_users:
+                    del self._file_users[file_path]
+                self.logger.info(f"Unassigned task {task_id} (file moved to artworks)")
+        else:
+            self.logger.info(
+                f"Zip deleted from user folder: {file_path} (user: {user_name}, task: {task_id})"
+            )
+            if self.movement_logger:
+                self.movement_logger.info(
+                    f"Zip deleted (completed): {file_path} (user: {user_name}, task: {task_id})"
+                )
+
+            if user_id and self.api_client.complete_task(task_id, user_id):
+                if file_path in self._file_users:
+                    del self._file_users[file_path]
+                self.logger.info(f"Completed task {task_id} by user {user_name}")
 
     def process_pending(self) -> None:
         """Process pending debounced events."""
