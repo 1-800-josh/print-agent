@@ -1,0 +1,27 @@
+{
+  "API_BASE_URL": "http://localhost:3000",
+  "API_KEY": "your-service-api-key-here",
+  "ORGANISATION_ID": "your-organisation-uuid",
+  "UPLOADTHING_APP_ID": "your-uploadthing-app-id",
+
+  "SYNC_INTERVAL_SECONDS": 60,
+  "MAX_WORKERS": 10,
+  "DOWNLOAD_TIMEOUT_SECONDS": 60,
+  "CONFIG_REFRESH_INTERVAL_SECONDS": 300,
+
+  "FILE_EVENT_DEBOUNCE_SECONDS": 2.0,
+  "FILE_CLEANUP_INTERVAL_SECONDS": 30,
+
+  "RECONCILE_TASK_STATES": true,
+  "CLEANUP_EMPTY_ARTWORK_FOLDERS": true,
+
+  "NETWORK_DRIVE_PREFIX": "/Users/example/print-agent/",
+  "ARTWORK_FOLDER": "artworks",
+  "USERS_FOLDER": "users",
+
+  "SERVICE_NAME": "PrintAgentSync",
+
+  "LOG_DIR": "/var/lib/printagent/logs",
+  "RENAME_LOG_DIR": "/var/lib/printagent/logs/renames",
+  "MOVEMENT_LOG_DIR": "/var/lib/printagent/logs/movements"
+}

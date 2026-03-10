@@ -1,5 +1,6 @@
 """Tests for configuration."""
 
+import json
 import os
 import pytest
 from unittest.mock import patch
@@ -7,24 +8,53 @@ from unittest.mock import patch
 from src.config import AgentConfig
 
 
-class TestAgentConfigFromEnv:
-    """Test AgentConfig.from_env."""
+class TestAgentConfigFromFile:
+    """Test AgentConfig.from_file."""
 
-    @patch.dict(os.environ, {"SYNC_INTERVAL_SECONDS": "120", "ARTWORK_FOLDER": "custom_artworks"})
-    def test_loads_values_from_env(self):
-        """Loads configuration from environment variables."""
-        config = AgentConfig.from_env()
+    def test_loads_values_from_file(self, tmp_path):
+        """Loads configuration from JSON file."""
+        config_data = {
+            "SYNC_INTERVAL_SECONDS": 120,
+            "ARTWORK_FOLDER": "custom_artworks",
+            "API_KEY": "test-key"
+        }
+        config_file = tmp_path / "config.json"
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        config = AgentConfig.from_file(config_file)
         assert config.SYNC_INTERVAL_SECONDS == 120
         assert config.ARTWORK_FOLDER == "custom_artworks"
+        assert config.API_KEY == "test-key"
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_uses_defaults_when_env_empty(self):
-        """Uses default values when environment variables are not set."""
-        config = AgentConfig.from_env()
-        assert config.SYNC_INTERVAL_SECONDS == 60
-        assert config.ARTWORK_FOLDER == "artworks"
-        assert config.USERS_FOLDER == "users"
-        assert config.API_BASE_URL == "http://localhost:3000"
+    def test_uses_defaults_for_missing_keys(self, tmp_path):
+        """Uses default values for keys not present in config file."""
+        config_data = {"API_KEY": "test-key"}
+        config_file = tmp_path / "config.json"
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        config = AgentConfig.from_file(config_file)
+        assert config.SYNC_INTERVAL_SECONDS == 60  # default
+        assert config.ARTWORK_FOLDER == "artworks"  # default
+        assert config.USERS_FOLDER == "users"  # default
+        assert config.API_KEY == "test-key"  # from file
+
+    def test_handles_invalid_json(self, tmp_path):
+        """Raises JSONDecodeError for invalid JSON."""
+        config_file = tmp_path / "config.json"
+        with open(config_file, 'w') as f:
+            f.write("invalid json {")
+
+        with pytest.raises(json.JSONDecodeError):
+            AgentConfig.from_file(config_file)
+
+    def test_handles_missing_file(self, tmp_path):
+        """Raises FileNotFoundError for missing config file."""
+        config_file = tmp_path / "missing.json"
+
+        with pytest.raises(FileNotFoundError):
+            AgentConfig.from_file(config_file)
 
 
 class TestAgentConfigPostInit:

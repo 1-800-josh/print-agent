@@ -45,15 +45,24 @@ pip install -r requirements.txt
 
 ### Configuration
 
-Create a `.env` file:
+Create a `config.json` file based on `config.example.json`:
 
-```env
-API_BASE_URL=http://localhost:3000
-API_KEY=your-api-key
-ORGANISATION_ID=your-org-id
-UPLOADTHING_APP_ID=your-uploadthing-app-id
-SYNC_INTERVAL_SECONDS=60
-MAX_WORKERS=10
+```bash
+cp config.example.json config.json
+# Edit config.json with your values
+```
+
+Or use the `--config` flag to specify a custom config file path:
+
+```bash
+python main.py --config /path/to/my-config.json service
+```
+
+For bootstrap configuration (e.g., when the config file path itself needs to be configured), set the `PRINT_AGENT_CONFIG` environment variable:
+
+```bash
+export PRINT_AGENT_CONFIG=/etc/print-agent/config.json
+python main.py service
 ```
 
 ### Running
@@ -156,18 +165,31 @@ sudo systemctl enable print-agent
 sudo systemctl start print-agent
 ```
 
-## Environment Variables
+## Configuration Options
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `API_BASE_URL` | Internal portal API URL | `http://localhost:3000` |
-| `API_KEY` | Service API key | Required |
-| `ORGANISATION_ID` | Organisation UUID | Required |
-| `UPLOADTHING_APP_ID` | UploadThing app ID | Required |
-| `SYNC_INTERVAL_SECONDS` | Seconds between syncs | `60` |
-| `MAX_WORKERS` | Download worker processes | `10` |
-| `OUTPUT_BASE_DIR` | Local output directory | Platform default |
-| `LOG_DIR` | Log directory | Platform default |
+Configuration is specified in JSON format. All options are optional unless marked as Required.
+
+| Option | Description | Default | Type |
+|--------|-------------|---------|------|
+| `API_BASE_URL` | Internal portal API URL | `"http://localhost:3000"` | string |
+| `API_KEY` | Service API key | `""` (Required) | string |
+| `ORGANISATION_ID` | Organisation UUID | `""` (Required) | string |
+| `UPLOADTHING_APP_ID` | UploadThing app ID | `""` (Required) | string |
+| `SYNC_INTERVAL_SECONDS` | Seconds between syncs | `60` | number |
+| `MAX_WORKERS` | Download worker processes | `10` | number |
+| `DOWNLOAD_TIMEOUT_SECONDS` | Download timeout | `60` | number |
+| `CONFIG_REFRESH_INTERVAL_SECONDS` | Config refresh interval | `300` | number |
+| `FILE_EVENT_DEBOUNCE_SECONDS` | File event debounce time | `2.0` | number |
+| `FILE_CLEANUP_INTERVAL_SECONDS` | File cleanup interval | `30` | number |
+| `RECONCILE_TASK_STATES` | Enable task state reconciliation | `true` | boolean |
+| `CLEANUP_EMPTY_ARTWORK_FOLDERS` | Enable empty folder cleanup | `true` | boolean |
+| `NETWORK_DRIVE_PREFIX` | Network drive prefix path | `""` | string |
+| `ARTWORK_FOLDER` | Artworks folder name | `"artworks"` | string |
+| `USERS_FOLDER` | Users folder name | `"users"` | string |
+| `SERVICE_NAME` | Service name for logging | `"PrintAgentSync"` | string |
+| `LOG_DIR` | Log directory | Platform default | string |
+| `RENAME_LOG_DIR` | Rename log subdirectory | Platform default | string |
+| `MOVEMENT_LOG_DIR` | Movement log subdirectory | Platform default | string |
 
 ## License
 
