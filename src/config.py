@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 
 @dataclass
@@ -38,6 +38,7 @@ class AgentConfig:
 
     # Service
     SERVICE_NAME: str = "PrintAgentSync"
+    INSTANCE_ID: Optional[str] = None
 
     # Log directories (set via __post_init__)
     LOG_DIR: str = ""
@@ -52,45 +53,6 @@ class AgentConfig:
             self.RENAME_LOG_DIR = os.path.join(self.LOG_DIR, "renames")
         if not self.MOVEMENT_LOG_DIR:
             self.MOVEMENT_LOG_DIR = os.path.join(self.LOG_DIR, "movements")
-
-    @classmethod
-    def from_env(cls) -> "AgentConfig":
-        """Load configuration from environment variables."""
-        return cls(
-            API_BASE_URL=os.getenv("API_BASE_URL", cls.API_BASE_URL),
-            API_KEY=os.getenv("API_KEY", cls.API_KEY),
-            ORGANISATION_ID=os.getenv("ORGANISATION_ID", cls.ORGANISATION_ID),
-            UPLOADTHING_APP_ID=os.getenv("UPLOADTHING_APP_ID", cls.UPLOADTHING_APP_ID),
-            SYNC_INTERVAL_SECONDS=int(
-                os.getenv("SYNC_INTERVAL_SECONDS", str(cls.SYNC_INTERVAL_SECONDS))
-            ),
-            MAX_WORKERS=int(os.getenv("MAX_WORKERS", str(cls.MAX_WORKERS))),
-            DOWNLOAD_TIMEOUT_SECONDS=int(
-                os.getenv("DOWNLOAD_TIMEOUT_SECONDS", str(cls.DOWNLOAD_TIMEOUT_SECONDS))
-            ),
-            CONFIG_REFRESH_INTERVAL_SECONDS=int(
-                os.getenv(
-                    "CONFIG_REFRESH_INTERVAL_SECONDS", str(cls.CONFIG_REFRESH_INTERVAL_SECONDS)
-                )
-            ),
-            FILE_EVENT_DEBOUNCE_SECONDS=float(
-                os.getenv("FILE_EVENT_DEBOUNCE_SECONDS", str(cls.FILE_EVENT_DEBOUNCE_SECONDS))
-            ),
-            FILE_CLEANUP_INTERVAL_SECONDS=int(
-                os.getenv("FILE_CLEANUP_INTERVAL_SECONDS", str(cls.FILE_CLEANUP_INTERVAL_SECONDS))
-            ),
-            RECONCILE_TASK_STATES=os.getenv("RECONCILE_TASK_STATES", "true").lower()
-            in ("true", "1", "yes"),
-            CLEANUP_EMPTY_ARTWORK_FOLDERS=os.getenv("CLEANUP_EMPTY_ARTWORK_FOLDERS", "true").lower()
-            in ("true", "1", "yes"),
-            NETWORK_DRIVE_PREFIX=os.getenv("NETWORK_DRIVE_PREFIX", ""),
-            ARTWORK_FOLDER=os.getenv("ARTWORK_FOLDER", cls.ARTWORK_FOLDER),
-            USERS_FOLDER=os.getenv("USERS_FOLDER", cls.USERS_FOLDER),
-            SERVICE_NAME=os.getenv("SERVICE_NAME", cls.SERVICE_NAME),
-            LOG_DIR=os.getenv("LOG_DIR", ""),
-            RENAME_LOG_DIR=os.getenv("RENAME_LOG_DIR", ""),
-            MOVEMENT_LOG_DIR=os.getenv("MOVEMENT_LOG_DIR", ""),
-        )
 
     @classmethod
     def from_file(cls, path: Union[str, Path]) -> "AgentConfig":
@@ -135,6 +97,7 @@ class AgentConfig:
             ARTWORK_FOLDER=data.get("ARTWORK_FOLDER", cls.ARTWORK_FOLDER),
             USERS_FOLDER=data.get("USERS_FOLDER", cls.USERS_FOLDER),
             SERVICE_NAME=data.get("SERVICE_NAME", cls.SERVICE_NAME),
+            INSTANCE_ID=data.get("INSTANCE_ID", cls.INSTANCE_ID),
             LOG_DIR=data.get("LOG_DIR", ""),
             RENAME_LOG_DIR=data.get("RENAME_LOG_DIR", ""),
             MOVEMENT_LOG_DIR=data.get("MOVEMENT_LOG_DIR", ""),

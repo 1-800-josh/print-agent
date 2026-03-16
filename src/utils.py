@@ -3,11 +3,67 @@
 import logging
 import os
 import signal
+import sys
 import threading
+from datetime import datetime
 from types import FrameType
 from typing import Dict, List, Optional
 
+# Windows Event Log imports (conditional)
+try:
+    import win32evtlog  # type: ignore
+    import win32evtlogutil  # type: ignore
+    WIN32_AVAILABLE = True
+except ImportError:
+    WIN32_AVAILABLE = False
+
 _shutdown_events: Dict[str, threading.Event] = {}
+
+
+class WindowsEventLogHandler(logging.Handler):
+    """Windows Event Log handler for logging to Windows Event Viewer."""
+
+    def __init__(self, event_source: str, instance_id: Optional[str] = None):
+        super().__init__()
+        self.event_source = event_source
+        self.instance_id = instance_id
+
+        if not WIN32_AVAILABLE:
+            raise ImportError("pywin32 is not available. Windows Event Log support disabled.")
+
+    def emit(self, record):
+        """Emit a record to the Windows Event Log."""
+        try:
+            # Map Python log levels to Windows Event Log types
+            if record.levelno >= logging.ERROR:
+                event_type = win32evtlog.EVENTLOG_ERROR_TYPE
+            elif record.levelno >= logging.WARNING:
+                event_type = win32evtlog.EVENTLOG_WARNING_TYPE
+            else:
+                event_type = win32evtlog.EVENTLOG_INFORMATION_TYPE
+
+            # Format the message
+            message = self.format(record)
+            if self.instance_id:
+                message = f"[{self.instance_id}] {message}"
+
+            # Write to Windows Event Log
+            win32evtlogutil.ReportEvent(
+                self.event_source,
+                1,
+                eventCategory=0,
+                eventType=event_type,
+                strings=[message],
+                sid=None,
+            )
+        except Exception:
+            # Silently ignore errors to avoid logging loops
+            pass
+
+
+def get_timestamp() -> str:
+    """Get current timestamp in YYYY-MM-DD_HH-MM-SS format."""
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
 def generate_filename(
@@ -51,27 +107,53 @@ def ensure_unique_filename(directory: str, filename: str, extension: str = ".png
         counter += 1
 
 
-def setup_logging(name: str, log_dir: str, level: int = logging.INFO) -> logging.Logger:
-    """Set up logging with file and console handlers."""
+def setup_logging(
+    name: str,
+    log_dir: str,
+    level: int = logging.INFO,
+    instance_id: Optional[str] = None,
+    force_event_log: bool = False,
+    event_source: Optional[str] = None
+) -> logging.Logger:
+    """Set up logging with file, console, and Windows Event Log handlers."""
     os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    # Remove existing handlers to avoid duplicates
-    logger.handlers = []
+    if logger.handlers:
+        logger.handlers.clear()
 
-    # File handler
-    file_handler = logging.FileHandler(os.path.join(log_dir, f"{name}.log"), encoding="utf-8")
+    # Create unique filename for each instance
+    timestamp = get_timestamp()
+    instance_suffix = f"_{instance_id}" if instance_id else ""
+    log_file = os.path.join(log_dir, f"{name}_{timestamp}{instance_suffix}.log")
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(level)
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
-    # Console handler
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
+
+    logger.info("Logging to file: %s", log_file)
+
+    # Add Windows Event Log handler if explicitly enabled for this run mode.
+    if sys.platform == "win32" and force_event_log:
+        try:
+            event_log_handler = WindowsEventLogHandler(event_source or name, instance_id)
+            event_log_handler.setFormatter(formatter)
+            logger.addHandler(event_log_handler)
+        except ImportError:
+            logger.warning(
+                "Windows Event Log requested but pywin32 is not installed. "
+                "Install pywin32 to enable event logging."
+            )
 
     return logger
 

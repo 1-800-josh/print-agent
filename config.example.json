@@ -20,6 +20,7 @@
   "USERS_FOLDER": "users",
 
   "SERVICE_NAME": "PrintAgentSync",
+  "INSTANCE_ID": null,
 
   "LOG_DIR": "/var/lib/printagent/logs",
   "RENAME_LOG_DIR": "/var/lib/printagent/logs/renames",
