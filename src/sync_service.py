@@ -4,12 +4,14 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from src.api_client import APIClient, PrintingTask
 from src.config import AgentConfig
 from src.file_watcher import FileWatcher
+from src.health_reporting import emit_status_event, emit_status_heartbeat
 from src.order_sync import OrderSync
 from src.utils import get_shutdown_event, setup_logging, setup_signal_handlers
 
@@ -28,6 +30,11 @@ class SyncService:
         self._network_paths: List[str] = []
         self._last_config_refresh = 0
         self._tasks: List[PrintingTask] = []
+        self._last_sync_started_at: Optional[str] = None
+        self._last_successful_sync_at: Optional[str] = None
+        self._last_error: Optional[str] = None
+        self._consecutive_sync_failures = 0
+        self._consecutive_operational_failures = 0
 
         # Create API client
         self.api_client = APIClient(
@@ -106,6 +113,28 @@ class SyncService:
         if "-" in folder_name:
             return folder_name[: folder_name.index("-")]
         return folder_name if folder_name else None
+
+    def _now_iso(self) -> str:
+        """Return the current UTC timestamp in ISO-8601 format."""
+        return datetime.now(timezone.utc).isoformat()
+
+    def _current_status_details(self) -> Dict[str, object]:
+        """Build current service health details for structured status events."""
+        watcher_running = self.file_watcher.is_running() if self.file_watcher else False
+        return {
+            "watcher_running": watcher_running,
+            "last_sync_started_at": self._last_sync_started_at,
+            "last_successful_sync_at": self._last_successful_sync_at,
+            "consecutive_sync_failures": self._consecutive_sync_failures,
+            "consecutive_operational_failures": self._consecutive_operational_failures,
+            "last_error": self._last_error,
+            "task_count": len(self._tasks),
+        }
+
+    def _current_health_state(self) -> Tuple[str, bool]:
+        """Return the current derived health state."""
+        healthy = self._last_error is None and self._consecutive_operational_failures == 0
+        return ("healthy" if healthy else "degraded", healthy)
 
     def _build_fs_state(
         self,
@@ -278,6 +307,15 @@ class SyncService:
             )
         except Exception as e:
             self.logger.error(f"Failed to refresh network paths: {e}")
+            self._last_error = str(e)
+            self._consecutive_operational_failures += 1
+            emit_status_event(
+                "refresh_failed",
+                level="error",
+                state="degraded",
+                healthy=False,
+                details={"error": str(e), **self._current_status_details()},
+            )
 
     def _initialize_folder_structure(self) -> None:
         """Initialize folder structure for users.
@@ -314,6 +352,15 @@ class SyncService:
 
         except Exception as e:
             self.logger.error(f"Failed to initialize folder structure: {e}")
+            self._last_error = str(e)
+            self._consecutive_operational_failures += 1
+            emit_status_event(
+                "initialization_failed",
+                level="error",
+                state="degraded",
+                healthy=False,
+                details={"error": str(e), **self._current_status_details()},
+            )
 
     def _initialize_watcher(self) -> None:
         """Initialize file watcher if not already running.
@@ -354,10 +401,24 @@ class SyncService:
             debounce_seconds=self.config.FILE_EVENT_DEBOUNCE_SECONDS,
         )
         self.file_watcher.start()
+        emit_status_event(
+            "watcher_started",
+            state="healthy",
+            healthy=True,
+            details={"watch_paths": watch_paths},
+        )
 
     def run_sync_cycle(self) -> None:
         """Run a single sync cycle."""
         self.logger.info("Starting sync cycle")
+        self._last_sync_started_at = self._now_iso()
+        current_state, healthy = self._current_health_state()
+        emit_status_event(
+            "sync_started",
+            state=current_state,
+            healthy=healthy,
+            details=self._current_status_details(),
+        )
 
         try:
             # 1. Refresh paths / fetch tasks (need fresh data for reconciliation)
@@ -373,21 +434,66 @@ class SyncService:
             result = self.order_sync.sync_orders()
 
             if result.success:
+                self._last_successful_sync_at = self._now_iso()
+                self._last_error = None
+                self._consecutive_sync_failures = 0
+                self._consecutive_operational_failures = 0
                 self.logger.info(
                     f"Sync cycle completed: {result.downloaded} downloaded, {result.failed} failed"
                 )
+                emit_status_event(
+                    "sync_succeeded",
+                    state="healthy",
+                    healthy=True,
+                    details={
+                        "downloaded": result.downloaded,
+                        "failed": result.failed,
+                        **self._current_status_details(),
+                    },
+                )
             else:
+                self._consecutive_sync_failures += 1
+                self._consecutive_operational_failures += 1
+                self._last_error = result.errors[0] if result.errors else "Sync cycle had errors"
                 self.logger.error(
                     f"Sync cycle had errors: {result.downloaded} downloaded, {result.failed} failed"
                 )
                 for error in result.errors[:5]:  # Log first 5 errors
                     self.logger.error(f"  - {error}")
+                emit_status_event(
+                    "sync_failed",
+                    level="error",
+                    state="degraded",
+                    healthy=False,
+                    details={
+                        "downloaded": result.downloaded,
+                        "failed": result.failed,
+                        "errors": result.errors[:5],
+                        **self._current_status_details(),
+                    },
+                )
 
         except Exception as e:
+            self._consecutive_sync_failures += 1
+            self._consecutive_operational_failures += 1
+            self._last_error = str(e)
             self.logger.exception(f"Error in sync cycle: {e}")
+            emit_status_event(
+                "sync_failed",
+                level="error",
+                state="degraded",
+                healthy=False,
+                details={"error": str(e), **self._current_status_details()},
+            )
 
     def run(self) -> None:
         """Main service loop."""
+        emit_status_event(
+            "service_started",
+            state="starting",
+            healthy=True,
+            details=self._current_status_details(),
+        )
         self.logger.info("=" * 50)
         self.logger.info("Print Agent Sync Service Starting")
         self.logger.info("=" * 50)
@@ -408,6 +514,13 @@ class SyncService:
 
         # Start file watcher
         self._initialize_watcher()
+        current_state, healthy = self._current_health_state()
+        emit_status_heartbeat(
+            state=current_state,
+            healthy=healthy,
+            details=self._current_status_details(),
+            force=True,
+        )
 
         # Main loop
         last_sync = time.time()
@@ -429,22 +542,62 @@ class SyncService:
                 if self.file_watcher and not self.file_watcher.is_running():
                     self._initialize_watcher()
 
+                current_state, healthy = self._current_health_state()
+                emit_status_heartbeat(
+                    state=current_state,
+                    healthy=healthy,
+                    details=self._current_status_details(),
+                )
+
                 # Small sleep to prevent busy waiting
                 time.sleep(0.1)
 
             except Exception as e:
+                self._last_error = str(e)
                 self.logger.exception(f"Error in main loop: {e}")
+                emit_status_event(
+                    "main_loop_error",
+                    level="error",
+                    state="degraded",
+                    healthy=False,
+                    details={"error": str(e), **self._current_status_details()},
+                )
                 time.sleep(5)  # Wait a bit before retrying
 
         # Cleanup
+        emit_status_event(
+            "shutdown_started",
+            state="stopping",
+            healthy=True,
+            details=self._current_status_details(),
+        )
         self.logger.info("Shutting down...")
         if self.file_watcher:
             self.file_watcher.stop()
+            emit_status_event(
+                "watcher_stopped",
+                state="stopping",
+                healthy=True,
+                details={"watcher_running": False},
+            )
         self.logger.info("Print Agent Sync Service stopped")
+        emit_status_event(
+            "shutdown_complete",
+            state="stopped",
+            healthy=True,
+            details=self._current_status_details(),
+        )
 
     def run_once(self) -> None:
         """Run a single sync without entering the main loop."""
+        emit_status_event("service_started", state="starting", healthy=True)
         self.logger.info("Running single sync cycle")
         self._initialize_folder_structure()
         self._refresh_network_paths()
         self.run_sync_cycle()
+        emit_status_event(
+            "shutdown_complete",
+            state="stopped",
+            healthy=self._consecutive_sync_failures == 0,
+            details=self._current_status_details(),
+        )

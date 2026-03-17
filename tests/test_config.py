@@ -38,7 +38,24 @@ class TestAgentConfigFromFile:
         assert config.SYNC_INTERVAL_SECONDS == 60  # default
         assert config.ARTWORK_FOLDER == "artworks"  # default
         assert config.USERS_FOLDER == "users"  # default
+        assert config.STRUCTURED_STATUS_STDOUT_ENABLED is False
+        assert config.HEALTH_HEARTBEAT_INTERVAL_SECONDS == 30
         assert config.API_KEY == "test-key"  # from file
+
+    def test_loads_health_reporting_settings(self, tmp_path):
+        """Loads structured status reporting settings."""
+        config_data = {
+            "STRUCTURED_STATUS_STDOUT_ENABLED": True,
+            "HEALTH_HEARTBEAT_INTERVAL_SECONDS": 45,
+        }
+        config_file = tmp_path / "config.json"
+        with open(config_file, "w") as f:
+            json.dump(config_data, f)
+
+        config = AgentConfig.from_file(config_file)
+
+        assert config.STRUCTURED_STATUS_STDOUT_ENABLED is True
+        assert config.HEALTH_HEARTBEAT_INTERVAL_SECONDS == 45
 
     def test_handles_invalid_json(self, tmp_path):
         """Raises JSONDecodeError for invalid JSON."""

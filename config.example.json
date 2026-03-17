@@ -21,6 +21,8 @@
 
   "SERVICE_NAME": "PrintAgentSync",
   "INSTANCE_ID": null,
+  "STRUCTURED_STATUS_STDOUT_ENABLED": false,
+  "HEALTH_HEARTBEAT_INTERVAL_SECONDS": 30,
 
   "LOG_DIR": "/var/lib/printagent/logs",
   "RENAME_LOG_DIR": "/var/lib/printagent/logs/renames",

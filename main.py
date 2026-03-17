@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from src.config import AgentConfig
+from src.health_reporting import configure_status_reporting, emit_status_event
 from src.sync_service import SyncService
 from src.utils import setup_logging, setup_signal_handlers
 
@@ -37,6 +38,13 @@ def run_service(args: argparse.Namespace) -> None:
         force_event_log=(sys.platform == "win32"),
         event_source=config.SERVICE_NAME
     )
+    configure_status_reporting(
+        enabled=config.STRUCTURED_STATUS_STDOUT_ENABLED,
+        service_name=config.SERVICE_NAME,
+        instance_id=config.INSTANCE_ID,
+        heartbeat_interval_seconds=config.HEALTH_HEARTBEAT_INTERVAL_SECONDS,
+    )
+    emit_status_event("service_starting", state="starting", healthy=True)
     setup_signal_handlers(config.SERVICE_NAME, logger)
     logger.info("Starting Print Agent Sync Service (CLI)")
 
@@ -53,6 +61,13 @@ def run_sync(args: argparse.Namespace) -> None:
         instance_id=config.INSTANCE_ID,
         event_source=config.SERVICE_NAME
     )
+    configure_status_reporting(
+        enabled=config.STRUCTURED_STATUS_STDOUT_ENABLED,
+        service_name=config.SERVICE_NAME,
+        instance_id=config.INSTANCE_ID,
+        heartbeat_interval_seconds=config.HEALTH_HEARTBEAT_INTERVAL_SECONDS,
+    )
+    emit_status_event("sync_mode_starting", state="starting", healthy=True)
 
     service = SyncService(config, logger)
     service.run_once()
@@ -64,9 +79,25 @@ def load_config(args: argparse.Namespace) -> AgentConfig:
     try:
         return AgentConfig.from_file(config_path)
     except FileNotFoundError:
+        emit_status_event(
+            "config_error",
+            level="error",
+            state="config_error",
+            healthy=False,
+            details={"config_path": config_path, "error": "Config file not found"},
+            force=True,
+        )
         print(f"Error: Config file not found: {config_path}", file=sys.stderr)
         sys.exit(1)
     except json.JSONDecodeError as e:
+        emit_status_event(
+            "config_error",
+            level="error",
+            state="config_error",
+            healthy=False,
+            details={"config_path": config_path, "error": str(e)},
+            force=True,
+        )
         print(f"Error: Invalid JSON in config file {config_path}: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -175,8 +206,26 @@ def main() -> None:
             parser.print_help()
             sys.exit(1)
     except RuntimeError as e:
+        emit_status_event(
+            "fatal_error",
+            level="error",
+            state="fatal_error",
+            healthy=False,
+            details={"error": str(e)},
+            force=True,
+        )
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+    except Exception as e:
+        emit_status_event(
+            "fatal_error",
+            level="error",
+            state="fatal_error",
+            healthy=False,
+            details={"error": str(e)},
+            force=True,
+        )
+        raise
 
 
 if __name__ == "__main__":

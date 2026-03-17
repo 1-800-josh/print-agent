@@ -39,6 +39,8 @@ class AgentConfig:
     # Service
     SERVICE_NAME: str = "PrintAgentSync"
     INSTANCE_ID: Optional[str] = None
+    STRUCTURED_STATUS_STDOUT_ENABLED: bool = False
+    HEALTH_HEARTBEAT_INTERVAL_SECONDS: int = 30
 
     # Log directories (set via __post_init__)
     LOG_DIR: str = ""
@@ -98,6 +100,18 @@ class AgentConfig:
             USERS_FOLDER=data.get("USERS_FOLDER", cls.USERS_FOLDER),
             SERVICE_NAME=data.get("SERVICE_NAME", cls.SERVICE_NAME),
             INSTANCE_ID=data.get("INSTANCE_ID", cls.INSTANCE_ID),
+            STRUCTURED_STATUS_STDOUT_ENABLED=to_bool(
+                data.get(
+                    "STRUCTURED_STATUS_STDOUT_ENABLED",
+                    cls.STRUCTURED_STATUS_STDOUT_ENABLED,
+                )
+            ),
+            HEALTH_HEARTBEAT_INTERVAL_SECONDS=to_int(
+                data.get(
+                    "HEALTH_HEARTBEAT_INTERVAL_SECONDS",
+                    cls.HEALTH_HEARTBEAT_INTERVAL_SECONDS,
+                )
+            ),
             LOG_DIR=data.get("LOG_DIR", ""),
             RENAME_LOG_DIR=data.get("RENAME_LOG_DIR", ""),
             MOVEMENT_LOG_DIR=data.get("MOVEMENT_LOG_DIR", ""),

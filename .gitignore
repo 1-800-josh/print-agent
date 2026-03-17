@@ -17,3 +17,5 @@ logs/
 hotfolders/
 .coverage
 htmlcov/
+
+status.json

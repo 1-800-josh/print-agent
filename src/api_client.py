@@ -10,6 +10,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from src.health_reporting import emit_status_event
+
 
 @dataclass
 class ArtworkInfo:
@@ -187,6 +189,13 @@ class APIClient:
 
         except Exception as e:
             self.logger.error(f"Failed to fetch tasks: {e}")
+            emit_status_event(
+                "api_error",
+                level="error",
+                state="degraded",
+                healthy=False,
+                details={"operation": "fetch_tasks", "error": str(e), "url": url},
+            )
             raise
 
     def assign_task(
@@ -219,6 +228,19 @@ class APIClient:
 
         except requests.RequestException as e:
             self.logger.error(f"Failed to assign {task_ids}: {e}")
+            emit_status_event(
+                "api_error",
+                level="error",
+                state="degraded",
+                healthy=False,
+                details={
+                    "operation": "assign_task",
+                    "task_ids": task_ids,
+                    "user_id": user_id,
+                    "error": str(e),
+                    "url": url,
+                },
+            )
             return False
 
     def unassign_task(self, task_id: str) -> bool:
@@ -235,6 +257,18 @@ class APIClient:
 
         except requests.RequestException as e:
             self.logger.error(f"Failed to unassign task {task_id}: {e}")
+            emit_status_event(
+                "api_error",
+                level="error",
+                state="degraded",
+                healthy=False,
+                details={
+                    "operation": "unassign_task",
+                    "task_id": task_id,
+                    "error": str(e),
+                    "url": url,
+                },
+            )
             return False
 
     def complete_task(self, task_id: str, user_id: str) -> bool:
@@ -253,6 +287,19 @@ class APIClient:
 
         except requests.RequestException as e:
             self.logger.error(f"Failed to complete task {task_id}: {e}")
+            emit_status_event(
+                "api_error",
+                level="error",
+                state="degraded",
+                healthy=False,
+                details={
+                    "operation": "complete_task",
+                    "task_id": task_id,
+                    "user_id": user_id,
+                    "error": str(e),
+                    "url": url,
+                },
+            )
             return False
 
     def fetch_users(self) -> List[User]:
@@ -286,4 +333,11 @@ class APIClient:
 
         except Exception as e:
             self.logger.error(f"Failed to fetch users: {e}")
+            emit_status_event(
+                "api_error",
+                level="error",
+                state="degraded",
+                healthy=False,
+                details={"operation": "fetch_users", "error": str(e), "url": url},
+            )
             raise

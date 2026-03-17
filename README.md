@@ -9,6 +9,7 @@ The Print Agent is a Python service that:
 - Organizes files by material and delivery date
 - Uses Morse code encoding for filenames
 - Watches hot folders for file operations to update task status
+- Emits structured JSON health/state events for external supervision
 - Supports multiprocessing for fast downloads
 
 ## Architecture
@@ -187,6 +188,8 @@ Configuration is specified in JSON format. All options are optional unless marke
 | `ARTWORK_FOLDER` | Artworks folder name | `"artworks"` | string |
 | `USERS_FOLDER` | Users folder name | `"users"` | string |
 | `SERVICE_NAME` | Service name for logging | `"PrintAgentSync"` | string |
+| `STRUCTURED_STATUS_STDOUT_ENABLED` | Emit machine-readable JSON health events on stdout | `false` | boolean |
+| `HEALTH_HEARTBEAT_INTERVAL_SECONDS` | Interval between heartbeat events | `30` | number |
 | `LOG_DIR` | Log directory | Platform default | string |
 | `RENAME_LOG_DIR` | Rename log subdirectory | Platform default | string |
 | `MOVEMENT_LOG_DIR` | Movement log subdirectory | Platform default | string |
