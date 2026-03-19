@@ -42,6 +42,12 @@ class AgentConfig:
     STRUCTURED_STATUS_STDOUT_ENABLED: bool = False
     HEALTH_HEARTBEAT_INTERVAL_SECONDS: int = 30
 
+    # PostHog Configuration
+    POSTHOG_ENABLED: bool = False
+    POSTHOG_PROJECT_API_KEY: str = ""
+    POSTHOG_HOST: str = "https://app.posthog.com"
+
+
     # Log directories (set via __post_init__)
     LOG_DIR: str = ""
     RENAME_LOG_DIR: str = ""
@@ -112,6 +118,11 @@ class AgentConfig:
                     cls.HEALTH_HEARTBEAT_INTERVAL_SECONDS,
                 )
             ),
+            POSTHOG_ENABLED=to_bool(data.get("POSTHOG_ENABLED", cls.POSTHOG_ENABLED)),
+            POSTHOG_PROJECT_API_KEY=data.get(
+                "POSTHOG_PROJECT_API_KEY", cls.POSTHOG_PROJECT_API_KEY
+            ),
+            POSTHOG_HOST=data.get("POSTHOG_HOST", cls.POSTHOG_HOST),
             LOG_DIR=data.get("LOG_DIR", ""),
             RENAME_LOG_DIR=data.get("RENAME_LOG_DIR", ""),
             MOVEMENT_LOG_DIR=data.get("MOVEMENT_LOG_DIR", ""),

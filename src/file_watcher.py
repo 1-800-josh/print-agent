@@ -203,20 +203,25 @@ class HotFolderEventHandler(FileSystemEventHandler):
                 }
         from_folder = os.path.dirname(src_path) if src_path else "(unknown)"
 
-        self.logger.info(f"File moved to user folder: {file_path} (user: {user_name})")
+        self.logger.info(f"File moved to user folder: {file_path} (user: {user_name})", extra={'category': 'watcher'})
         if self.movement_logger:
             self.movement_logger.info(
-                f"Moved in: {file_path} from {from_folder} -> user: {user_id}"
+                f"Moved in: {file_path} from {from_folder} -> user: {user_id}",
+                extra={
+                    'category': 'movement',
+                    'pathname': file_path,
+                    'details': {'from_folder': from_folder, 'user_id': user_id}
+                }
             )
         order_id = task_info["order_id"] or ""
         task_id = task_info["task_id"]
         if not task_id:
-            self.logger.warning(f"Cannot assign: no task_id in filename {task_info['filename']}")
+            self.logger.warning(f"Cannot assign: no task_id in filename {task_info['filename']}", extra={'category': 'watcher'})
             return
 
         if self.api_client.assign_task(task_ids=[task_id], user_id=user_id):
             self._file_users[file_path] = user_id
-            self.logger.info(f"Assigned task {task_id} to user {user_id}")
+            self.logger.info(f"Assigned task {task_id} to user {user_id}", extra={'category': 'watcher'})
 
     def _handle_moved_out(self, file_path: str) -> None:
         """Handle file moved out of user folder."""
@@ -228,18 +233,25 @@ class HotFolderEventHandler(FileSystemEventHandler):
         if not task_info:
             return
 
-        self.logger.info(f"File moved out of user folder: {file_path}")
+        self.logger.info(f"File moved out of user folder: {file_path}", extra={'category': 'watcher'})
         if self.movement_logger:
-            self.movement_logger.info(f"Moved out: {file_path} (was user: {user_id})")
+            self.movement_logger.info(
+                f"Moved out: {file_path} (was user: {user_id})",
+                extra={
+                    'category': 'movement',
+                    'pathname': file_path,
+                    'details': {'user_id': user_id}
+                }
+            )
 
         task_id = task_info["task_id"]
         if not task_id:
-            self.logger.warning(f"Cannot unassign: no task_id in filename {task_info['filename']}")
+            self.logger.warning(f"Cannot unassign: no task_id in filename {task_info['filename']}", extra={'category': 'watcher'})
             return
 
         if self.api_client.unassign_task(task_id):
             del self._file_users[file_path]
-            self.logger.info(f"Unassigned task {task_id}")
+            self.logger.info(f"Unassigned task {task_id}", extra={'category': 'watcher'})
 
     def _handle_reassigned(self, dest_path: str) -> None:
         """Handle file moved from one user folder to another (reassign)."""
@@ -266,21 +278,26 @@ class HotFolderEventHandler(FileSystemEventHandler):
 
         task_id = task_info["task_id"]
 
-        self.logger.info(f"File reassigned: {dest_path} (from {src_user_name} to {dest_user_name})")
+        self.logger.info(f"File reassigned: {dest_path} (from {src_user_name} to {dest_user_name})", extra={'category': 'watcher'})
         if self.movement_logger:
             self.movement_logger.info(
-                f"Reassigned: {dest_path} from user {src_user_name} -> user {dest_user_name}"
+                f"Reassigned: {dest_path} from user {src_user_name} -> user {dest_user_name}",
+                extra={
+                    'category': 'movement',
+                    'pathname': dest_path,
+                    'details': {'src_user_name': src_user_name, 'dest_user_name': dest_user_name}
+                }
             )
 
         if not task_id:
-            self.logger.warning(f"Cannot reassign: no task_id in filename {task_info['filename']}")
+            self.logger.warning(f"Cannot reassign: no task_id in filename {task_info['filename']}", extra={'category': 'watcher'})
             return
 
         if self.api_client.assign_task(task_ids=[task_id], user_id=dest_user_id):
             self._file_users[dest_path] = dest_user_id
             if src_path in self._file_users:
                 del self._file_users[src_path]
-            self.logger.info(f"Assigned task {task_id} to {dest_user_name}")
+            self.logger.info(f"Assigned task {task_id} to {dest_user_name}", extra={'category': 'watcher'})
 
     def _handle_deleted(self, file_path: str) -> None:
         """Handle file deleted from user folder - complete task."""
@@ -314,16 +331,21 @@ class HotFolderEventHandler(FileSystemEventHandler):
             return
 
         # With zip/files directly in user folder, each task is one file or one zip - delete = complete
-        self.logger.info(f"File deleted from user folder: {file_path} (user: {user_name}, task: {task_id})")
+        self.logger.info(f"File deleted from user folder: {file_path} (user: {user_name}, task: {task_id})", extra={'category': 'watcher'})
         if self.movement_logger:
             self.movement_logger.info(
-                f"Deleted (completed): {file_path} (user: {user_id})"
+                f"Deleted (completed): {file_path} (user: {user_id})",
+                extra={
+                    'category': 'movement',
+                    'pathname': file_path,
+                    'details': {'user_id': user_id, 'task_id': task_id}
+                }
             )
 
         if user_id and self.api_client.complete_task(task_id, user_id):
             if file_path in self._file_users:
                 del self._file_users[file_path]
-            self.logger.info(f"Completed task {task_id} by user {user_name}")
+            self.logger.info(f"Completed task {task_id} by user {user_name}", extra={'category': 'watcher'})
 
     def on_moved(self, event: FileSystemEvent) -> None:
         """Handle file/folder moved event."""
@@ -363,11 +385,17 @@ class HotFolderEventHandler(FileSystemEventHandler):
                 dest_user_name = dest_user_info["user_name"]
                 self._folder_users[dest_path] = dest_user_id
                 self.logger.info(
-                    f"Folder moved to user folder: {dest_path} (user: {dest_user_name})"
+                    f"Folder moved to user folder: {dest_path} (user: {dest_user_name})",
+                    extra={'category': 'watcher'}
                 )
                 if self.movement_logger:
                     self.movement_logger.info(
-                        f"Folder moved in: {dest_path} from {src_path} -> user: {dest_user_name}"
+                        f"Folder moved in: {dest_path} from {src_path} -> user: {dest_user_name}",
+                        extra={
+                            'category': 'movement',
+                            'pathname': dest_path,
+                            'details': {'src_path': src_path, 'user_name': dest_user_name}
+                        }
                     )
         elif src_in_user and dest_in_user:
             src_user_info = self._extract_user_info(src_path)
@@ -382,22 +410,34 @@ class HotFolderEventHandler(FileSystemEventHandler):
                     if src_path in self._folder_users:
                         del self._folder_users[src_path]
                     self.logger.info(
-                        f"Folder reassigned: {dest_path} (from {src_user_name} to {dest_user_name})"
+                        f"Folder reassigned: {dest_path} (from {src_user_name} to {dest_user_name})",
+                        extra={'category': 'watcher'}
                     )
                     if self.movement_logger:
                         self.movement_logger.info(
-                            f"Folder reassigned: {dest_path} from {src_user_name} -> {dest_user_name}"
+                            f"Folder reassigned: {dest_path} from {src_user_name} -> {dest_user_name}",
+                            extra={
+                                'category': 'movement',
+                                'pathname': dest_path,
+                                'details': {'src_user_name': src_user_name, 'dest_user_name': dest_user_name}
+                            }
                         )
         elif src_in_user and not dest_in_user:
             src_user_id = self._folder_users.get(src_path)
             if src_user_id:
                 del self._folder_users[src_path]
                 self.logger.info(
-                    f"Folder moved out of user folder: {src_path} (was user: {src_user_id})"
+                    f"Folder moved out of user folder: {src_path} (was user: {src_user_id})",
+                    extra={'category': 'watcher'}
                 )
                 if self.movement_logger:
                     self.movement_logger.info(
-                        f"Folder moved out: {src_path} (was user: {src_user_id})"
+                        f"Folder moved out: {src_path} (was user: {src_user_id})",
+                        extra={
+                            'category': 'movement',
+                            'pathname': src_path,
+                            'details': {'user_id': src_user_id}
+                        }
                     )
 
     def on_created(self, event: FileSystemEvent) -> None:
@@ -461,7 +501,7 @@ class HotFolderEventHandler(FileSystemEventHandler):
         name_without_ext = filename[:-4]  # Remove .zip
         parts = name_without_ext.split("-")
         if len(parts) < 2:
-            self.logger.warning(f"Cannot parse zip filename: {filename}")
+            self.logger.warning(f"Cannot parse zip filename: {filename}", extra={'category': 'watcher'})
             return
 
         task_id = parts[0]
@@ -471,7 +511,8 @@ class HotFolderEventHandler(FileSystemEventHandler):
         moved_out_key = f"moved_out:{file_path}"
         if moved_out_key in self._debouncer._pending_events:
             self.logger.info(
-                f"Zip moved from user folder (moved_out pending): {file_path} -> skip complete, unassign will handle"
+                f"Zip moved from user folder (moved_out pending): {file_path} -> skip complete, unassign will handle",
+                extra={'category': 'watcher'}
             )
             return
 
@@ -490,29 +531,41 @@ class HotFolderEventHandler(FileSystemEventHandler):
 
         if file_in_artworks:
             self.logger.info(
-                f"Zip moved from user folder to artworks: {file_path} -> unassigning task {task_id}"
+                f"Zip moved from user folder to artworks: {file_path} -> unassigning task {task_id}",
+                extra={'category': 'watcher'}
             )
             if self.movement_logger:
                 self.movement_logger.info(
-                    f"Zip moved out (unassign): {file_path} (was user: {user_id}, task: {task_id})"
+                    f"Zip moved out (unassign): {file_path} (was user: {user_id}, task: {task_id})",
+                    extra={
+                        'category': 'movement',
+                        'pathname': file_path,
+                        'details': {'user_id': user_id, 'task_id': task_id}
+                    }
                 )
             if self.api_client.unassign_task(task_id):
                 if file_path in self._file_users:
                     del self._file_users[file_path]
-                self.logger.info(f"Unassigned task {task_id} (file moved to artworks)")
+                self.logger.info(f"Unassigned task {task_id} (file moved to artworks)", extra={'category': 'watcher'})
         else:
             self.logger.info(
-                f"Zip deleted from user folder: {file_path} (user: {user_name}, task: {task_id})"
+                f"Zip deleted from user folder: {file_path} (user: {user_name}, task: {task_id})",
+                extra={'category': 'watcher'}
             )
             if self.movement_logger:
                 self.movement_logger.info(
-                    f"Zip deleted (completed): {file_path} (user: {user_name}, task: {task_id})"
+                    f"Zip deleted (completed): {file_path} (user: {user_name}, task: {task_id})",
+                    extra={
+                        'category': 'movement',
+                        'pathname': file_path,
+                        'details': {'user_id': user_id, 'user_name': user_name, 'task_id': task_id}
+                    }
                 )
 
             if user_id and self.api_client.complete_task(task_id, user_id):
                 if file_path in self._file_users:
                     del self._file_users[file_path]
-                self.logger.info(f"Completed task {task_id} by user {user_name}")
+                self.logger.info(f"Completed task {task_id} by user {user_name}", extra={'category': 'watcher'})
 
     def process_pending(self) -> None:
         """Process pending debounced events."""
@@ -533,6 +586,7 @@ class FileWatcher:
         get_task_id: Optional[GetTaskIdFn] = None,
         recent_event_threshold: int = 15,
         cleanup_interval: int = 30,
+        posthog_config: Optional[Dict] = None,
     ):
         self.api_client = api_client
         self.network_paths = network_paths
@@ -543,6 +597,7 @@ class FileWatcher:
         self.get_task_id = get_task_id
         self._recent_event_threshold = recent_event_threshold
         self._cleanup_interval = cleanup_interval
+        self.posthog_config = posthog_config
 
         from watchdog.observers import Observer as WatcherObserver
 
@@ -552,6 +607,8 @@ class FileWatcher:
 
     def _setup_movement_logger(self) -> Optional[logging.Logger]:
         """Set up a dedicated logger for file movement events."""
+        import socket
+        
         if not self.movement_log_dir:
             return None
         movement_logger = logging.getLogger("print_agent_movement")
@@ -568,6 +625,13 @@ class FileWatcher:
         file_handler.setFormatter(formatter)
         movement_logger.addHandler(file_handler)
 
+        # Add PostHog handler
+        if self.posthog_config:
+            from src.health_reporting import PostHogHandler
+            posthog_handler = PostHogHandler(**self.posthog_config)
+            posthog_handler.setLevel(logging.INFO)
+            movement_logger.addHandler(posthog_handler)
+
         return movement_logger
 
     def start(self) -> None:
@@ -575,7 +639,7 @@ class FileWatcher:
         if self._running:
             return
 
-        self.logger.info(f"Starting file watcher for {len(self.network_paths)} network paths")
+        self.logger.info(f"Starting file watcher for {len(self.network_paths)} network paths", extra={'category': 'watcher'})
 
         movement_logger = self._setup_movement_logger()
 
@@ -601,9 +665,9 @@ class FileWatcher:
         for path in self.network_paths:
             if os.path.exists(path):
                 observer.schedule(self.handler, path, recursive=True)
-                self.logger.info(f"Watching: {path}")
+                self.logger.info(f"Watching: {path}", extra={'category': 'watcher'})
             else:
-                self.logger.warning(f"Network path does not exist: {path}")
+                self.logger.warning(f"Network path does not exist: {path}", extra={'category': 'watcher'})
 
         observer.start()
         self._running = True
@@ -613,7 +677,7 @@ class FileWatcher:
         if not self._running:
             return
 
-        self.logger.info("Stopping file watcher")
+        self.logger.info("Stopping file watcher", extra={'category': 'watcher'})
 
         if self.observer:
             self.observer.stop()

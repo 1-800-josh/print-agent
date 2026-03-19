@@ -113,9 +113,13 @@ def setup_logging(
     level: int = logging.INFO,
     instance_id: Optional[str] = None,
     force_event_log: bool = False,
-    event_source: Optional[str] = None
+    event_source: Optional[str] = None,
+    posthog_enabled: bool = False,
+    posthog_config: Optional[Dict[str, str]] = None,
 ) -> logging.Logger:
-    """Set up logging with file, console, and Windows Event Log handlers."""
+    """Set up logging with file, console, PostHog, and Windows Event Log handlers."""
+    import socket
+    
     os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -154,6 +158,19 @@ def setup_logging(
                 "Windows Event Log requested but pywin32 is not installed. "
                 "Install pywin32 to enable event logging."
             )
+
+    # Add PostHog handler if enabled
+    if posthog_enabled and posthog_config:
+        from src.health_reporting import PostHogHandler
+        posthog_handler = PostHogHandler(
+            posthog_api_key=posthog_config["api_key"],
+            posthog_host=posthog_config["host"],
+            organisation_id=posthog_config["organisation_id"],
+            instance_id=instance_id,
+            machine_name=socket.gethostname(),
+        )
+        posthog_handler.setLevel(logging.INFO)
+        logger.addHandler(posthog_handler)
 
     return logger
 

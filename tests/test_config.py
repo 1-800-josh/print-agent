@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from src.config import AgentConfig
 
-
 class TestAgentConfigFromFile:
     """Test AgentConfig.from_file."""
 
@@ -47,6 +46,9 @@ class TestAgentConfigFromFile:
         config_data = {
             "STRUCTURED_STATUS_STDOUT_ENABLED": True,
             "HEALTH_HEARTBEAT_INTERVAL_SECONDS": 45,
+            "POSTHOG_ENABLED": True,
+            "POSTHOG_PROJECT_API_KEY": "phc_test_key",
+            "POSTHOG_HOST": "https://test.posthog.com",
         }
         config_file = tmp_path / "config.json"
         with open(config_file, "w") as f:
@@ -56,6 +58,9 @@ class TestAgentConfigFromFile:
 
         assert config.STRUCTURED_STATUS_STDOUT_ENABLED is True
         assert config.HEALTH_HEARTBEAT_INTERVAL_SECONDS == 45
+        assert config.POSTHOG_ENABLED is True
+        assert config.POSTHOG_PROJECT_API_KEY == "phc_test_key"
+        assert config.POSTHOG_HOST == "https://test.posthog.com"
 
     def test_handles_invalid_json(self, tmp_path):
         """Raises JSONDecodeError for invalid JSON."""

@@ -10,7 +10,6 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from src.health_reporting import emit_status_event
 
 
 @dataclass
@@ -184,17 +183,18 @@ class APIClient:
                     )
                 )
 
-            self.logger.info(f"Fetched {len(tasks)} tasks from API")
+            self.logger.info(f"Fetched {len(tasks)} tasks from API", extra={'category': 'api'})
             return TasksResponse(tasks=tasks)
 
         except Exception as e:
-            self.logger.error(f"Failed to fetch tasks: {e}")
-            emit_status_event(
-                "api_error",
-                level="error",
-                state="degraded",
-                healthy=False,
-                details={"operation": "fetch_tasks", "error": str(e), "url": url},
+            self.logger.error(
+                f"Failed to fetch tasks: {e}",
+                extra={
+                    'category': 'api',
+                    'state': 'degraded',
+                    'healthy': False,
+                    'details': {"operation": "fetch_tasks", "error": str(e), "url": url},
+                }
             )
             raise
 
@@ -213,7 +213,7 @@ class APIClient:
         )
 
         if not task_ids:
-            self.logger.error("assign_task requires non-empty task_ids")
+            self.logger.error("assign_task requires non-empty task_ids", extra={'category': 'api'})
             return False
 
         payload: Dict[str, Any] = {"task_ids": task_ids}
@@ -223,23 +223,24 @@ class APIClient:
         try:
             response = self.session.post(url, json=payload, timeout=30)
             response.raise_for_status()
-            self.logger.info(f"Assigned task(s) {task_ids} to user {user_id}")
+            self.logger.info(f"Assigned task(s) {task_ids} to user {user_id}", extra={'category': 'api'})
             return True
 
         except requests.RequestException as e:
-            self.logger.error(f"Failed to assign {task_ids}: {e}")
-            emit_status_event(
-                "api_error",
-                level="error",
-                state="degraded",
-                healthy=False,
-                details={
-                    "operation": "assign_task",
-                    "task_ids": task_ids,
-                    "user_id": user_id,
-                    "error": str(e),
-                    "url": url,
-                },
+            self.logger.error(
+                f"Failed to assign {task_ids}: {e}",
+                extra={
+                    'category': 'api',
+                    'state': 'degraded',
+                    'healthy': False,
+                    'details': {
+                        "operation": "assign_task",
+                        "task_ids": task_ids,
+                        "user_id": user_id,
+                        "error": str(e),
+                        "url": url,
+                    },
+                }
             )
             return False
 
@@ -252,22 +253,23 @@ class APIClient:
         try:
             response = self.session.post(url, json={"task_ids": [task_id]}, timeout=30)
             response.raise_for_status()
-            self.logger.info(f"Unassigned task {task_id}")
+            self.logger.info(f"Unassigned task {task_id}", extra={'category': 'api'})
             return True
 
         except requests.RequestException as e:
-            self.logger.error(f"Failed to unassign task {task_id}: {e}")
-            emit_status_event(
-                "api_error",
-                level="error",
-                state="degraded",
-                healthy=False,
-                details={
-                    "operation": "unassign_task",
-                    "task_id": task_id,
-                    "error": str(e),
-                    "url": url,
-                },
+            self.logger.error(
+                f"Failed to unassign task {task_id}: {e}",
+                extra={
+                    'category': 'api',
+                    'state': 'degraded',
+                    'healthy': False,
+                    'details': {
+                        "operation": "unassign_task",
+                        "task_id": task_id,
+                        "error": str(e),
+                        "url": url,
+                    },
+                }
             )
             return False
 
@@ -282,23 +284,24 @@ class APIClient:
                 url, json={"task_ids": [task_id], "user_id": user_id}, timeout=30
             )
             response.raise_for_status()
-            self.logger.info(f"Completed task {task_id} by user {user_id}")
+            self.logger.info(f"Completed task {task_id} by user {user_id}", extra={'category': 'api'})
             return True
 
         except requests.RequestException as e:
-            self.logger.error(f"Failed to complete task {task_id}: {e}")
-            emit_status_event(
-                "api_error",
-                level="error",
-                state="degraded",
-                healthy=False,
-                details={
-                    "operation": "complete_task",
-                    "task_id": task_id,
-                    "user_id": user_id,
-                    "error": str(e),
-                    "url": url,
-                },
+            self.logger.error(
+                f"Failed to complete task {task_id}: {e}",
+                extra={
+                    'category': 'api',
+                    'state': 'degraded',
+                    'healthy': False,
+                    'details': {
+                        "operation": "complete_task",
+                        "task_id": task_id,
+                        "user_id": user_id,
+                        "error": str(e),
+                        "url": url,
+                    },
+                }
             )
             return False
 
@@ -328,16 +331,17 @@ class APIClient:
                     )
                 )
 
-            self.logger.info(f"Fetched {len(users)} users from API")
+            self.logger.info(f"Fetched {len(users)} users from API", extra={'category': 'api'})
             return users
 
         except Exception as e:
-            self.logger.error(f"Failed to fetch users: {e}")
-            emit_status_event(
-                "api_error",
-                level="error",
-                state="degraded",
-                healthy=False,
-                details={"operation": "fetch_users", "error": str(e), "url": url},
+            self.logger.error(
+                f"Failed to fetch users: {e}",
+                extra={
+                    'category': 'api',
+                    'state': 'degraded',
+                    'healthy': False,
+                    'details': {"operation": "fetch_users", "error": str(e), "url": url},
+                }
             )
             raise

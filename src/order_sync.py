@@ -49,6 +49,8 @@ class OrderSync:
 
     def _setup_rename_logger(self) -> logging.Logger:
         """Set up a dedicated logger for rename operations."""
+        import socket
+        
         rename_logger = logging.getLogger("print_agent_rename")
         rename_logger.setLevel(logging.INFO)
         rename_logger.handlers = []
@@ -63,11 +65,30 @@ class OrderSync:
         file_handler.setFormatter(formatter)
         rename_logger.addHandler(file_handler)
 
+        # Add PostHog handler
+        if self.config.POSTHOG_ENABLED:
+            from src.health_reporting import PostHogHandler
+            posthog_handler = PostHogHandler(
+                posthog_api_key=self.config.POSTHOG_PROJECT_API_KEY,
+                posthog_host=self.config.POSTHOG_HOST,
+                organisation_id=self.config.ORGANISATION_ID,
+                instance_id=self.config.INSTANCE_ID,
+                machine_name=socket.gethostname(),
+            )
+            posthog_handler.setLevel(logging.INFO)
+            rename_logger.addHandler(posthog_handler)
+
         return rename_logger
 
     def _log_rename(self, old_name: str, new_name: str, folder: str) -> None:
         """Log a file rename operation."""
-        self._rename_logger.info(f"Renamed: {old_name} -> {new_name} (folder: {folder})")
+        self._rename_logger.info(
+            f"Renamed: {old_name} -> {new_name} (folder: {folder})",
+            extra={
+                'category': 'rename',
+                'details': {'old_name': old_name, 'new_name': new_name, 'folder': folder}
+            }
+        )
 
     def fetch_ready_orders(self) -> List[PrintingTask]:
         """Fetch all READY_FOR_PRODUCTION orders with configured network paths."""
@@ -79,7 +100,8 @@ class OrderSync:
         filtered_tasks = [task for task in tasks if task.status == "PENDING" and task.network_path]
 
         self.logger.info(
-            f"Filtered {len(filtered_tasks)} tasks with network paths from {len(tasks)} total tasks"
+            f"Filtered {len(filtered_tasks)} tasks with network paths from {len(tasks)} total tasks",
+            extra={'category': 'sync'}
         )
         return filtered_tasks
 
@@ -123,16 +145,16 @@ class OrderSync:
 
     def sync_orders(self) -> SyncResult:
         """Synchronize orders to network paths."""
-        self.logger.info("Starting order sync")
+        self.logger.info("Starting order sync", extra={'category': 'sync'})
 
         try:
             tasks = self.fetch_ready_orders()
         except Exception as e:
-            self.logger.error(f"Failed to fetch tasks: {e}")
+            self.logger.error(f"Failed to fetch tasks: {e}", extra={'category': 'sync'})
             return SyncResult(success=False, downloaded=0, failed=0, errors=[str(e)])
 
         if not tasks:
-            self.logger.info("No tasks to sync")
+            self.logger.info("No tasks to sync", extra={'category': 'sync'})
             return SyncResult(success=True, downloaded=0, failed=0, errors=[])
 
         # Use artwork path from config
@@ -140,7 +162,7 @@ class OrderSync:
 
         # Log the artwork network path being used
         if artwork_path_config:
-            self.logger.info(f"Using artwork network path: {artwork_path_config}")
+            self.logger.info(f"Using artwork network path: {artwork_path_config}", extra={'category': 'sync'})
 
         # Group by material and delivery date
         grouped = self.group_by_material_and_date(tasks)
@@ -166,7 +188,8 @@ class OrderSync:
                 base_path = path_for_material or ""
                 if not base_path:
                     self.logger.warning(
-                        "NETWORK_DRIVE_PREFIX and artwork path are unset; files may save to current directory"
+                        "NETWORK_DRIVE_PREFIX and artwork path are unset; files may save to current directory",
+                        extra={'category': 'sync'}
                     )
 
             # Format delivery date to YYYYMMDD (handle ISO format with time)
@@ -255,11 +278,12 @@ class OrderSync:
                     )
 
         if not downloads:
-            self.logger.info("No artworks to download")
+            self.logger.info("No artworks to download", extra={'category': 'sync'})
             return SyncResult(success=True, downloaded=0, failed=0, errors=[])
 
         self.logger.info(
-            f"Downloading {len(downloads)} artworks using {self.config.MAX_WORKERS} workers"
+            f"Downloading {len(downloads)} artworks using {self.config.MAX_WORKERS} workers",
+            extra={'category': 'sync'}
         )
 
         # Download using process pool
@@ -286,7 +310,7 @@ class OrderSync:
                 else:
                     failed += 1
                     errors.append(message)
-                    self.logger.error(message)
+                    self.logger.error(message, extra={'category': 'sync'})
 
         # Create zip files for multi-artwork tasks
         for zip_path, file_paths in task_zip_files.items():
@@ -296,17 +320,17 @@ class OrderSync:
                         for file_path in file_paths:
                             if os.path.exists(file_path):
                                 zipf.write(file_path, os.path.basename(file_path))
-                    self.logger.info(f"Created zip: {zip_path} with {len(file_paths)} files")
+                    self.logger.info(f"Created zip: {zip_path} with {len(file_paths)} files", extra={'category': 'sync'})
                     # Delete individual files after zipping
                     for file_path in file_paths:
                         if os.path.exists(file_path):
                             os.remove(file_path)
                             self.logger.debug(f"Deleted original file: {file_path}")
                 except Exception as e:
-                    self.logger.error(f"Failed to create zip {zip_path}: {e}")
+                    self.logger.error(f"Failed to create zip {zip_path}: {e}", extra={'category': 'sync'})
                     errors.append(f"Failed to create zip {zip_path}: {e}")
 
-        self.logger.info(f"Sync complete: {downloaded} downloaded, {failed} failed")
+        self.logger.info(f"Sync complete: {downloaded} downloaded, {failed} failed", extra={'category': 'sync'})
 
         return SyncResult(
             success=failed == 0,

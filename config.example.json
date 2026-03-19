@@ -26,5 +26,9 @@
 
   "LOG_DIR": "/var/lib/printagent/logs",
   "RENAME_LOG_DIR": "/var/lib/printagent/logs/renames",
-  "MOVEMENT_LOG_DIR": "/var/lib/printagent/logs/movements"
+  "MOVEMENT_LOG_DIR": "/var/lib/printagent/logs/movements",
+
+  "POSTHOG_ENABLED": true,
+  "POSTHOG_PROJECT_API_KEY": "phc_YOUR_POSTHOG_API_KEY",
+  "POSTHOG_HOST": "https://eu.i.posthog.com"
 }

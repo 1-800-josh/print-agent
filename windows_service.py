@@ -25,11 +25,17 @@ def _setup_agent_logger(config: AgentConfig):
     from src.utils import setup_logging
 
     return setup_logging(
-        "sync_service",
+        "agent",
         config.LOG_DIR,
         instance_id=config.INSTANCE_ID,
         force_event_log=True,
         event_source=config.SERVICE_NAME,
+        posthog_enabled=config.POSTHOG_ENABLED,
+        posthog_config={
+            "api_key": config.POSTHOG_PROJECT_API_KEY,
+            "host": config.POSTHOG_HOST,
+            "organisation_id": config.ORGANISATION_ID,
+        } if config.POSTHOG_ENABLED else None,
     )
 
 

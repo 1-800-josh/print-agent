@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +12,6 @@ from typing import Callable, Dict, List, Optional, Tuple
 from src.api_client import APIClient, PrintingTask
 from src.config import AgentConfig
 from src.file_watcher import FileWatcher
-from src.health_reporting import emit_status_event, emit_status_heartbeat
 from src.order_sync import OrderSync
 from src.utils import get_shutdown_event, setup_logging, setup_signal_handlers
 
@@ -21,7 +21,16 @@ class SyncService:
 
     def __init__(self, config: AgentConfig, logger: Optional[logging.Logger] = None):
         self.config = config
-        self.logger = logger or setup_logging("sync_service", self.config.LOG_DIR)
+        self.logger = logger or setup_logging(
+            "agent",
+            self.config.LOG_DIR,
+            posthog_enabled=self.config.POSTHOG_ENABLED,
+            posthog_config={
+                "api_key": self.config.POSTHOG_PROJECT_API_KEY,
+                "host": self.config.POSTHOG_HOST,
+                "organisation_id": self.config.ORGANISATION_ID,
+            } if self.config.POSTHOG_ENABLED else None,
+        )
 
         # Shutdown handling
         self.shutdown_event = get_shutdown_event(self.config.SERVICE_NAME)
@@ -35,6 +44,7 @@ class SyncService:
         self._last_error: Optional[str] = None
         self._consecutive_sync_failures = 0
         self._consecutive_operational_failures = 0
+        self._last_heartbeat_at = 0.0
 
         # Create API client
         self.api_client = APIClient(
@@ -205,9 +215,9 @@ class SyncService:
                     try:
                         os.remove(path)
                         removed_count += 1
-                        self.logger.info(f"Removed stale file (task completed): {path}")
+                        self.logger.info(f"Removed stale file (task completed): {path}", extra={'category': 'reconcile'})
                     except OSError as e:
-                        self.logger.warning(f"Failed to remove stale file {path}: {e}")
+                        self.logger.warning(f"Failed to remove stale file {path}: {e}", extra={'category': 'reconcile'})
                 continue
 
             if fs_entry:
@@ -215,23 +225,25 @@ class SyncService:
                 if fs_user_id and fs_user_id != db_assigned:
                     if self.api_client.assign_task(task_ids=[task_id], user_id=fs_user_id):
                         assigned_count += 1
-                        self.logger.info(f"Reconciled: assigned task {task_id} to user {fs_user_id}")
+                        self.logger.info(f"Reconciled: assigned task {task_id} to user {fs_user_id}", extra={'category': 'reconcile'})
                 elif not fs_user_id and db_assigned:
                     if self.api_client.unassign_task(task_id):
                         unassigned_count += 1
-                        self.logger.info(f"Reconciled: unassigned task {task_id}")
+                        self.logger.info(f"Reconciled: unassigned task {task_id}", extra={'category': 'reconcile'})
             else:
                 # File not found
                 if db_assigned:
                     if self.api_client.unassign_task(task_id):
                         unassigned_count += 1
                         self.logger.info(
-                            f"Task {task_id} assigned to user {db_assigned} but file not found; unassigned"
+                            f"Task {task_id} assigned to user {db_assigned} but file not found; unassigned",
+                            extra={'category': 'reconcile'}
                         )
 
         if assigned_count or unassigned_count or removed_count:
             self.logger.info(
-                f"Reconciled: {assigned_count} assigned, {unassigned_count} unassigned, {removed_count} files removed"
+                f"Reconciled: {assigned_count} assigned, {unassigned_count} unassigned, {removed_count} files removed",
+                extra={'category': 'reconcile'}
             )
 
     def _cleanup_empty_artwork_folders(self) -> None:
@@ -264,12 +276,12 @@ class SyncService:
                             pass
                     subdir.rmdir()
                     removed += 1
-                    self.logger.info(f"Removed empty artwork folder: {subdir}")
+                    self.logger.info(f"Removed empty artwork folder: {subdir}", extra={'category': 'cleanup'})
             except OSError as e:
-                self.logger.warning("Could not remove folder %s: %s", subdir, e)
+                self.logger.warning("Could not remove folder %s: %s", subdir, e, extra={'category': 'cleanup'})
 
         if removed:
-            self.logger.info(f"Cleaned up {removed} empty artwork folder(s)")
+            self.logger.info(f"Cleaned up {removed} empty artwork folder(s)", extra={'category': 'cleanup'})
 
     def _refresh_network_paths(self, force: bool = False) -> None:
         """Refresh network paths from synced tasks.
@@ -303,18 +315,20 @@ class SyncService:
 
             self.logger.info(
                 f"Refreshed network paths: artwork={self.config.ARTWORK_FOLDER}, "
-                f"user={self.config.USERS_FOLDER}, material paths={len(self._network_paths)}"
+                f"user={self.config.USERS_FOLDER}, material paths={len(self._network_paths)}",
+                extra={'category': 'sync'}
             )
         except Exception as e:
-            self.logger.error(f"Failed to refresh network paths: {e}")
             self._last_error = str(e)
             self._consecutive_operational_failures += 1
-            emit_status_event(
-                "refresh_failed",
-                level="error",
-                state="degraded",
-                healthy=False,
-                details={"error": str(e), **self._current_status_details()},
+            self.logger.error(
+                f"Failed to refresh network paths: {e}",
+                extra={
+                    'category': 'sync',
+                    'state': 'degraded',
+                    'healthy': False,
+                    'details': {"error": str(e), **self._current_status_details()},
+                }
             )
 
     def _initialize_folder_structure(self) -> None:
@@ -326,7 +340,8 @@ class SyncService:
         """
         if not self.config.NETWORK_DRIVE_PREFIX:
             self.logger.warning(
-                "NETWORK_DRIVE_PREFIX not configured, skipping folder initialization"
+                "NETWORK_DRIVE_PREFIX not configured, skipping folder initialization",
+                extra={'category': 'service'}
             )
             return
 
@@ -334,32 +349,33 @@ class SyncService:
             user_network_path = self.config.USERS_FOLDER
 
             if not user_network_path:
-                self.logger.warning("USERS_FOLDER not configured, skipping folder initialization")
+                self.logger.warning("USERS_FOLDER not configured, skipping folder initialization", extra={'category': 'service'})
                 return
 
             base_path = os.path.join(self.config.NETWORK_DRIVE_PREFIX, user_network_path)
             os.makedirs(base_path, exist_ok=True)
-            self.logger.info(f"Created base folder: {base_path}")
+            self.logger.info(f"Created base folder: {base_path}", extra={'category': 'service'})
 
             users = self.api_client.fetch_users()
             for user in users:
                 folder_name = f"{user.user_id}-{user.first_name} {user.last_name}"
                 user_folder = os.path.join(base_path, folder_name)
                 os.makedirs(user_folder, exist_ok=True)
-                self.logger.info(f"Created user folder: {user_folder}")
+                self.logger.info(f"Created user folder: {user_folder}", extra={'category': 'service'})
 
-            self.logger.info(f"Initialized folder structure for {len(users)} users")
+            self.logger.info(f"Initialized folder structure for {len(users)} users", extra={'category': 'service'})
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize folder structure: {e}")
             self._last_error = str(e)
             self._consecutive_operational_failures += 1
-            emit_status_event(
-                "initialization_failed",
-                level="error",
-                state="degraded",
-                healthy=False,
-                details={"error": str(e), **self._current_status_details()},
+            self.logger.error(
+                f"Failed to initialize folder structure: {e}",
+                extra={
+                    'category': 'service',
+                    'state': 'degraded',
+                    'healthy': False,
+                    'details': {"error": str(e), **self._current_status_details()},
+                }
             )
 
     def _initialize_watcher(self) -> None:
@@ -384,7 +400,7 @@ class SyncService:
             watch_paths.append(full_path)
 
         if not watch_paths:
-            self.logger.warning("No network paths configured, skipping file watcher")
+            self.logger.warning("No network paths configured, skipping file watcher", extra={'category': 'watcher'})
             return
 
         user_paths = []
@@ -399,25 +415,37 @@ class SyncService:
             logger=self.logger,
             get_task_id=self.get_task_id,
             debounce_seconds=self.config.FILE_EVENT_DEBOUNCE_SECONDS,
+            posthog_config={
+                "posthog_api_key": self.config.POSTHOG_PROJECT_API_KEY,
+                "posthog_host": self.config.POSTHOG_HOST,
+                "organisation_id": self.config.ORGANISATION_ID,
+                "instance_id": self.config.INSTANCE_ID,
+                "machine_name": socket.gethostname(),
+            } if self.config.POSTHOG_ENABLED else None,
         )
         self.file_watcher.start()
-        emit_status_event(
-            "watcher_started",
-            state="healthy",
-            healthy=True,
-            details={"watch_paths": watch_paths},
+        self.logger.info(
+            "Watcher started",
+            extra={
+                'category': 'watcher',
+                'state': 'healthy',
+                'healthy': True,
+                'details': {"watch_paths": watch_paths},
+            }
         )
 
     def run_sync_cycle(self) -> None:
         """Run a single sync cycle."""
-        self.logger.info("Starting sync cycle")
         self._last_sync_started_at = self._now_iso()
         current_state, healthy = self._current_health_state()
-        emit_status_event(
-            "sync_started",
-            state=current_state,
-            healthy=healthy,
-            details=self._current_status_details(),
+        self.logger.info(
+            "Sync cycle started",
+            extra={
+                'category': 'sync',
+                'state': current_state,
+                'healthy': healthy,
+                'details': self._current_status_details(),
+            }
         )
 
         try:
@@ -439,68 +467,72 @@ class SyncService:
                 self._consecutive_sync_failures = 0
                 self._consecutive_operational_failures = 0
                 self.logger.info(
-                    f"Sync cycle completed: {result.downloaded} downloaded, {result.failed} failed"
-                )
-                emit_status_event(
-                    "sync_succeeded",
-                    state="healthy",
-                    healthy=True,
-                    details={
-                        "downloaded": result.downloaded,
-                        "failed": result.failed,
-                        **self._current_status_details(),
-                    },
+                    f"Sync cycle completed: {result.downloaded} downloaded, {result.failed} failed",
+                    extra={
+                        'category': 'sync',
+                        'state': 'healthy',
+                        'healthy': True,
+                        'details': {
+                            "downloaded": result.downloaded,
+                            "failed": result.failed,
+                            **self._current_status_details(),
+                        },
+                    }
                 )
             else:
                 self._consecutive_sync_failures += 1
                 self._consecutive_operational_failures += 1
                 self._last_error = result.errors[0] if result.errors else "Sync cycle had errors"
                 self.logger.error(
-                    f"Sync cycle had errors: {result.downloaded} downloaded, {result.failed} failed"
+                    f"Sync cycle had errors: {result.downloaded} downloaded, {result.failed} failed",
+                    extra={
+                        'category': 'sync',
+                        'state': 'degraded',
+                        'healthy': False,
+                        'details': {
+                            "downloaded": result.downloaded,
+                            "failed": result.failed,
+                            "errors": result.errors[:5],
+                            **self._current_status_details(),
+                        },
+                    }
                 )
                 for error in result.errors[:5]:  # Log first 5 errors
-                    self.logger.error(f"  - {error}")
-                emit_status_event(
-                    "sync_failed",
-                    level="error",
-                    state="degraded",
-                    healthy=False,
-                    details={
-                        "downloaded": result.downloaded,
-                        "failed": result.failed,
-                        "errors": result.errors[:5],
-                        **self._current_status_details(),
-                    },
-                )
+                    self.logger.error(f"  - {error}", extra={'category': 'sync'})
 
         except Exception as e:
             self._consecutive_sync_failures += 1
             self._consecutive_operational_failures += 1
             self._last_error = str(e)
-            self.logger.exception(f"Error in sync cycle: {e}")
-            emit_status_event(
-                "sync_failed",
-                level="error",
-                state="degraded",
-                healthy=False,
-                details={"error": str(e), **self._current_status_details()},
+            self.logger.error(
+                f"Error in sync cycle: {e}",
+                extra={
+                    'category': 'sync',
+                    'state': 'degraded',
+                    'healthy': False,
+                    'details': {"error": str(e), **self._current_status_details()},
+                },
+                exc_info=True
             )
 
     def run(self) -> None:
         """Main service loop."""
-        emit_status_event(
-            "service_started",
-            state="starting",
-            healthy=True,
-            details=self._current_status_details(),
+        self.logger.info(
+            "Service started",
+            extra={
+                'category': 'service',
+                'state': 'starting',
+                'healthy': True,
+                'details': self._current_status_details(),
+            }
         )
-        self.logger.info("=" * 50)
-        self.logger.info("Print Agent Sync Service Starting")
-        self.logger.info("=" * 50)
-        self.logger.info(f"Organisation: {self.config.ORGANISATION_ID}")
-        self.logger.info(f"API URL: {self.config.API_BASE_URL}")
-        self.logger.info(f"Sync interval: {self.config.SYNC_INTERVAL_SECONDS}s")
-        self.logger.info(f"Max workers: {self.config.MAX_WORKERS}")
+        self.logger.info("=" * 50, extra={'category': 'service'})
+        self.logger.info("Print Agent Sync Service Starting", extra={'category': 'service'})
+        self.logger.info("=" * 50, extra={'category': 'service'})
+        self.logger.info(f"Organisation: {self.config.ORGANISATION_ID}", extra={'category': 'service'})
+        self.logger.info(f"API URL: {self.config.API_BASE_URL}", extra={'category': 'service'})
+        self.logger.info(f"Sync interval: {self.config.SYNC_INTERVAL_SECONDS}s", extra={'category': 'service'})
+        self.logger.info(f"Max workers: {self.config.MAX_WORKERS}", extra={'category': 'service'})
 
         # Set up signal handlers
         setup_signal_handlers(self.config.SERVICE_NAME, self.logger)
@@ -515,11 +547,15 @@ class SyncService:
         # Start file watcher
         self._initialize_watcher()
         current_state, healthy = self._current_health_state()
-        emit_status_heartbeat(
-            state=current_state,
-            healthy=healthy,
-            details=self._current_status_details(),
-            force=True,
+        self._last_heartbeat_at = time.time()
+        self.logger.info(
+            "Heartbeat",
+            extra={
+                'category': 'service',
+                'state': current_state,
+                'healthy': healthy,
+                'details': self._current_status_details(),
+            }
         )
 
         # Main loop
@@ -542,62 +578,84 @@ class SyncService:
                 if self.file_watcher and not self.file_watcher.is_running():
                     self._initialize_watcher()
 
-                current_state, healthy = self._current_health_state()
-                emit_status_heartbeat(
-                    state=current_state,
-                    healthy=healthy,
-                    details=self._current_status_details(),
-                )
+                # Emit heartbeat if interval elapsed
+                now = time.time()
+                if now - self._last_heartbeat_at >= self.config.HEALTH_HEARTBEAT_INTERVAL_SECONDS:
+                    self._last_heartbeat_at = now
+                    current_state, healthy = self._current_health_state()
+                    self.logger.info(
+                        "Heartbeat",
+                        extra={
+                            'category': 'service',
+                            'state': current_state,
+                            'healthy': healthy,
+                            'details': self._current_status_details(),
+                        }
+                    )
 
                 # Small sleep to prevent busy waiting
                 time.sleep(0.1)
 
             except Exception as e:
                 self._last_error = str(e)
-                self.logger.exception(f"Error in main loop: {e}")
-                emit_status_event(
-                    "main_loop_error",
-                    level="error",
-                    state="degraded",
-                    healthy=False,
-                    details={"error": str(e), **self._current_status_details()},
+                self.logger.error(
+                    f"Error in main loop: {e}",
+                    extra={
+                        'category': 'service',
+                        'state': 'degraded',
+                        'healthy': False,
+                        'details': {"error": str(e), **self._current_status_details()},
+                    },
+                    exc_info=True
                 )
                 time.sleep(5)  # Wait a bit before retrying
 
         # Cleanup
-        emit_status_event(
-            "shutdown_started",
-            state="stopping",
-            healthy=True,
-            details=self._current_status_details(),
+        self.logger.info(
+            "Shutdown started",
+            extra={
+                'category': 'service',
+                'state': 'stopping',
+                'healthy': True,
+                'details': self._current_status_details(),
+            }
         )
-        self.logger.info("Shutting down...")
+        self.logger.info("Shutting down...", extra={'category': 'service'})
         if self.file_watcher:
             self.file_watcher.stop()
-            emit_status_event(
-                "watcher_stopped",
-                state="stopping",
-                healthy=True,
-                details={"watcher_running": False},
+            self.logger.info(
+                "Watcher stopped",
+                extra={
+                    'category': 'watcher',
+                    'state': 'stopping',
+                    'healthy': True,
+                    'details': {"watcher_running": False},
+                }
             )
-        self.logger.info("Print Agent Sync Service stopped")
-        emit_status_event(
-            "shutdown_complete",
-            state="stopped",
-            healthy=True,
-            details=self._current_status_details(),
+        self.logger.info("Print Agent Sync Service stopped", extra={'category': 'service'})
+        self.logger.info(
+            "Shutdown complete",
+            extra={
+                'category': 'service',
+                'state': 'stopped',
+                'healthy': True,
+                'details': self._current_status_details(),
+            }
         )
 
     def run_once(self) -> None:
         """Run a single sync without entering the main loop."""
-        emit_status_event("service_started", state="starting", healthy=True)
-        self.logger.info("Running single sync cycle")
+        self.logger.info("Service started", extra={'category': 'service', 'state': 'starting', 'healthy': True})
+        self.logger.info("Running single sync cycle", extra={'category': 'service'})
         self._initialize_folder_structure()
         self._refresh_network_paths()
         self.run_sync_cycle()
-        emit_status_event(
-            "shutdown_complete",
-            state="stopped",
-            healthy=self._consecutive_sync_failures == 0,
-            details=self._current_status_details(),
+        self.logger.info(
+            "Shutdown complete",
+            extra={
+                'category': 'service',
+                'state': 'stopped',
+                'healthy': self._consecutive_sync_failures == 0,
+                'details': self._current_status_details(),
+            }
         )
