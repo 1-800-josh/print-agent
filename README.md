@@ -181,7 +181,6 @@ Configuration is specified in JSON format. All options are optional unless marke
 | `DOWNLOAD_TIMEOUT_SECONDS` | Download timeout | `60` | number |
 | `CONFIG_REFRESH_INTERVAL_SECONDS` | Config refresh interval | `300` | number |
 | `FILE_EVENT_DEBOUNCE_SECONDS` | File event debounce time | `2.0` | number |
-| `FILE_CLEANUP_INTERVAL_SECONDS` | File cleanup interval | `30` | number |
 | `RECONCILE_TASK_STATES` | Enable task state reconciliation | `true` | boolean |
 | `CLEANUP_EMPTY_ARTWORK_FOLDERS` | Enable empty folder cleanup | `true` | boolean |
 | `NETWORK_DRIVE_PREFIX` | Network drive prefix path | `""` | string |

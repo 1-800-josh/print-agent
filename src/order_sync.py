@@ -122,7 +122,7 @@ class OrderSync:
         ],  # url, save_path, order_id, artwork_id, task_id, zip_filename
     ) -> Tuple[bool, str]:
         """Download a single artwork. Designed for multiprocessing."""
-        url, save_path, order_id, artwork_id, task_id, zip_filename = artwork_data
+        url, save_path, order_id, artwork_id, _, _ = artwork_data
 
         try:
             response = self.session.get(

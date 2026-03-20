@@ -4,14 +4,10 @@ import logging
 import os
 import re
 import time
-from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
-GetTaskIdFn = Callable[[str, str], Optional[str]]
-
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
-from watchdog.observers import Observer
 
 from src.api_client import APIClient
 
@@ -67,7 +63,6 @@ class HotFolderEventHandler(FileSystemEventHandler):
         logger: Optional[logging.Logger] = None,
         movement_logger: Optional[logging.Logger] = None,
         debounce_seconds: float = 2.0,
-        get_task_id: Optional[GetTaskIdFn] = None,
         recent_event_threshold: int = 15,
         cleanup_interval: int = 30,
     ):
@@ -77,7 +72,6 @@ class HotFolderEventHandler(FileSystemEventHandler):
         self.logger = logger or logging.getLogger(__name__)
         self.movement_logger = movement_logger
         self.debounce_seconds = debounce_seconds
-        self._get_task_id = get_task_id or (lambda _o, _a: None)
         self._recent_event_threshold = recent_event_threshold
         self._cleanup_interval = cleanup_interval
 
@@ -93,7 +87,6 @@ class HotFolderEventHandler(FileSystemEventHandler):
         self._recent_user_folder_creates: Dict[
             str, tuple
         ] = {}  # filename -> (dest_path, timestamp)
-        self._moved_folder_contents: Dict[str, List[str]] = {}  # dest_folder -> list of file paths
 
     def is_pending_artwork_move(self, filename: str) -> bool:
         """Return True if filename was recently deleted from artwork (move in progress)."""
@@ -213,7 +206,6 @@ class HotFolderEventHandler(FileSystemEventHandler):
                     'details': {'from_folder': from_folder, 'user_id': user_id}
                 }
             )
-        order_id = task_info["order_id"] or ""
         task_id = task_info["task_id"]
         if not task_id:
             self.logger.warning(f"Cannot assign: no task_id in filename {task_info['filename']}", extra={'category': 'watcher'})
@@ -505,8 +497,6 @@ class HotFolderEventHandler(FileSystemEventHandler):
             return
 
         task_id = parts[0]
-        order_id = parts[1]
-
         # Check if moved_out is pending (on_moved fired) - don't complete, let unassign handle it
         moved_out_key = f"moved_out:{file_path}"
         if moved_out_key in self._debouncer._pending_events:
@@ -583,7 +573,6 @@ class FileWatcher:
         movement_log_dir: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         debounce_seconds: float = 2.0,
-        get_task_id: Optional[GetTaskIdFn] = None,
         recent_event_threshold: int = 15,
         cleanup_interval: int = 30,
         posthog_config: Optional[Dict] = None,
@@ -594,7 +583,6 @@ class FileWatcher:
         self.movement_log_dir = movement_log_dir
         self.logger = logger or logging.getLogger(__name__)
         self.debounce_seconds = debounce_seconds
-        self.get_task_id = get_task_id
         self._recent_event_threshold = recent_event_threshold
         self._cleanup_interval = cleanup_interval
         self.posthog_config = posthog_config
@@ -651,7 +639,6 @@ class FileWatcher:
             logger=self.logger,
             movement_logger=movement_logger,
             debounce_seconds=self.debounce_seconds,
-            get_task_id=self.get_task_id,
             recent_event_threshold=self._recent_event_threshold,
             cleanup_interval=self._cleanup_interval,
         )

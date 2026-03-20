@@ -64,13 +64,6 @@ class SyncService:
             should_skip_artwork_download=self._should_skip_artwork_download,
         )
         self.file_watcher: Optional[FileWatcher] = None
-        self._task_id_lookup: Dict[
-            Tuple[str, str], str
-        ] = {}  # (order_id, artwork_group_id) -> task_id
-
-    def get_task_id(self, order_id: str, artwork_group_id: str) -> Optional[str]:
-        """Resolve task_id from order_id and artwork_group_id."""
-        return self._task_id_lookup.get((order_id, artwork_group_id))
 
     def _build_watch_path(self, prefix: str, folder: str) -> str:
         """Build full watch path from prefix and folder."""
@@ -302,15 +295,10 @@ class SyncService:
 
             # Per-task material paths (used for reference; watch paths use artwork/user)
             unique_paths = set()
-            task_id_lookup: Dict[Tuple[str, str], str] = {}
             for task in tasks:
                 if task.network_path:
                     unique_paths.add(task.network_path)
-                for artwork in task.artworks:
-                    if task.order_id and artwork.artwork_group_id:
-                        task_id_lookup[(task.order_id, artwork.artwork_group_id)] = task.task_id
             self._network_paths = list(unique_paths)
-            self._task_id_lookup = task_id_lookup
             self._last_config_refresh = now
 
             self.logger.info(
@@ -413,7 +401,6 @@ class SyncService:
             user_paths=user_paths,
             movement_log_dir=self.config.MOVEMENT_LOG_DIR,
             logger=self.logger,
-            get_task_id=self.get_task_id,
             debounce_seconds=self.config.FILE_EVENT_DEBOUNCE_SECONDS,
             posthog_config={
                 "posthog_api_key": self.config.POSTHOG_PROJECT_API_KEY,

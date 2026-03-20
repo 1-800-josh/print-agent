@@ -4,7 +4,6 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
 
 import requests
 from requests.adapters import HTTPAdapter
