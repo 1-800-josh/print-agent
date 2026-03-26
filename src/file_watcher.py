@@ -60,6 +60,7 @@ class HotFolderEventHandler(FileSystemEventHandler):
         api_client: APIClient,
         network_paths: List[str],
         user_paths: Optional[List[str]] = None,
+        completed_paths: Optional[List[str]] = None,
         logger: Optional[logging.Logger] = None,
         movement_logger: Optional[logging.Logger] = None,
         debounce_seconds: float = 2.0,
@@ -69,6 +70,7 @@ class HotFolderEventHandler(FileSystemEventHandler):
         self.api_client = api_client
         self.network_paths = set(network_paths)
         self.user_paths = set(user_paths or [])
+        self.completed_paths = set(completed_paths or [])
         self.logger = logger or logging.getLogger(__name__)
         self.movement_logger = movement_logger
         self.debounce_seconds = debounce_seconds
@@ -87,6 +89,9 @@ class HotFolderEventHandler(FileSystemEventHandler):
         self._recent_user_folder_creates: Dict[
             str, tuple
         ] = {}  # filename -> (dest_path, timestamp)
+        self._moved_to_completed_sources: Dict[str, str] = {}  # dest_path -> src_path
+        self._recent_user_deletes_for_completed: Dict[str, tuple] = {}  # filename -> (src_path, ts)
+        self._recent_completed_task_ids: Dict[str, float] = {}  # task_id -> ts (dedupe completion)
 
     def is_pending_artwork_move(self, filename: str) -> bool:
         """Return True if filename was recently deleted from artwork (move in progress)."""
@@ -155,6 +160,106 @@ class HotFolderEventHandler(FileSystemEventHandler):
         """Check if file is inside a user subfolder."""
         return self._extract_user_info(file_path) is not None
 
+    def _is_in_completed_folder(self, file_path: str) -> bool:
+        """True if path is under a configured completed-folder root."""
+        path_str = os.path.normpath(file_path)
+        for base in self.completed_paths:
+            base_norm = os.path.normpath(base)
+            if path_str == base_norm or path_str.startswith(base_norm + os.sep):
+                return True
+        return False
+
+    @property
+    def _artwork_search_roots(self) -> Set[str]:
+        """Watch roots that are neither user folders nor completed (e.g. artworks)."""
+        return self.network_paths - self.user_paths - self.completed_paths
+
+    def _find_file_in_roots(self, filename: str, roots: Set[str]) -> bool:
+        """Return True if filename exists as a file under any root (recursive)."""
+        for root in roots:
+            root_path = Path(root)
+            if root_path.is_dir():
+                for p in root_path.rglob(filename):
+                    if p.is_file():
+                        return True
+        return False
+
+    def _pending_moved_to_completed_for_basename(self, basename: str) -> bool:
+        """True if a debounced moved_to_completed for this filename is pending."""
+        for key in self._debouncer._pending_events:
+            if not key.startswith("moved_to_completed:"):
+                continue
+            _, path = key.split(":", 1)
+            if os.path.basename(path) == basename:
+                return True
+        return False
+
+    def _is_recently_completed_task(self, task_id: str) -> bool:
+        """True if we already completed this task within the recent-event window."""
+        ts = self._recent_completed_task_ids.get(task_id)
+        if not ts:
+            return False
+        if time.time() - ts > self._recent_event_threshold:
+            del self._recent_completed_task_ids[task_id]
+            return False
+        return True
+
+    def _record_recent_completed_task(self, task_id: str) -> None:
+        self._recent_completed_task_ids[task_id] = time.time()
+
+    def _complete_task_for_user_src(self, src_path: str, dest_path: str) -> None:
+        """Call complete_task using user_id from src path; task_id from dest or src filename."""
+        task_info = self._extract_task_info(dest_path) or self._extract_task_info(src_path)
+        if not task_info:
+            return
+
+        task_id = task_info["task_id"]
+        if not task_id:
+            self.logger.warning(
+                f"Cannot complete: no task_id in filename {task_info['filename']}",
+                extra={'category': 'watcher'},
+            )
+            return
+
+        if self._is_recently_completed_task(task_id):
+            return
+
+        user_info = self._extract_user_info(src_path)
+        if not user_info:
+            return
+
+        user_id = user_info["user_id"]
+        user_name = user_info["user_name"]
+
+        self.logger.info(
+            f"Task completed (moved to completed folder): {dest_path} (user: {user_name}, task: {task_id})",
+            extra={'category': 'watcher'},
+        )
+        if self.movement_logger:
+            self.movement_logger.info(
+                f"Completed (moved to completed): {dest_path} src={src_path} (user: {user_id}, task: {task_id})",
+                extra={
+                    'category': 'movement',
+                    'pathname': dest_path,
+                    'details': {'user_id': user_id, 'task_id': task_id, 'src_path': src_path},
+                },
+            )
+
+        if user_id and self.api_client.complete_task(task_id, user_id):
+            if src_path in self._file_users:
+                del self._file_users[src_path]
+            self._record_recent_completed_task(task_id)
+            self.logger.info(
+                f"Completed task {task_id} by user {user_name}", extra={'category': 'watcher'}
+            )
+
+    def _handle_moved_to_completed(self, dest_path: str) -> None:
+        """Handle file moved or copied into the completed folder."""
+        src_path = self._moved_to_completed_sources.pop(dest_path, None)
+        if not src_path:
+            return
+        self._complete_task_for_user_src(src_path, dest_path)
+
     def _handle_event(self, event_type: str, file_path: str) -> None:
         """Handle a debounced file event."""
         if event_type == "moved_in":
@@ -163,6 +268,8 @@ class HotFolderEventHandler(FileSystemEventHandler):
             self._handle_moved_out(file_path)
         elif event_type == "reassigned":
             self._handle_reassigned(file_path)
+        elif event_type == "moved_to_completed":
+            self._handle_moved_to_completed(file_path)
         elif event_type == "deleted":
             self._handle_deleted(file_path)
 
@@ -292,9 +399,9 @@ class HotFolderEventHandler(FileSystemEventHandler):
             self.logger.info(f"Assigned task {task_id} to {dest_user_name}", extra={'category': 'watcher'})
 
     def _handle_deleted(self, file_path: str) -> None:
-        """Handle file deleted from user folder - complete task."""
+        """Handle file deleted from user folder (reassign only; completion is via completed folder)."""
         filename = os.path.basename(file_path)
-        # If file was recently created in another user folder, it's a move (reassign) - skip complete
+        # If file was recently created in another user folder, it's a move (reassign)
         entry = self._recent_user_folder_creates.pop(filename, None)
         if entry:
             _, ts = entry
@@ -305,39 +412,6 @@ class HotFolderEventHandler(FileSystemEventHandler):
                     if tid:
                         self.api_client.unassign_task(tid)
                 return  # Reassign handled by moved_in; unassign clears old owner
-
-        user_info = self._extract_user_info(file_path)
-        user_id = self._file_users.get(file_path) or (user_info["user_id"] if user_info else None)
-        if not user_id:
-            return
-
-        user_name = user_info["user_name"] if user_info else ""
-
-        task_info = self._extract_task_info(file_path)
-        if not task_info:
-            return
-
-        task_id = task_info["task_id"]
-        if not task_id:
-            self.logger.warning(f"Cannot complete: no task_id in filename {task_info['filename']}")
-            return
-
-        # With zip/files directly in user folder, each task is one file or one zip - delete = complete
-        self.logger.info(f"File deleted from user folder: {file_path} (user: {user_name}, task: {task_id})", extra={'category': 'watcher'})
-        if self.movement_logger:
-            self.movement_logger.info(
-                f"Deleted (completed): {file_path} (user: {user_id})",
-                extra={
-                    'category': 'movement',
-                    'pathname': file_path,
-                    'details': {'user_id': user_id, 'task_id': task_id}
-                }
-            )
-
-        if user_id and self.api_client.complete_task(task_id, user_id):
-            if file_path in self._file_users:
-                del self._file_users[file_path]
-            self.logger.info(f"Completed task {task_id} by user {user_name}", extra={'category': 'watcher'})
 
     def on_moved(self, event: FileSystemEvent) -> None:
         """Handle file/folder moved event."""
@@ -355,6 +429,12 @@ class HotFolderEventHandler(FileSystemEventHandler):
 
         src_in_user = self._is_in_user_folder(src_path)
         dest_in_user = self._is_in_user_folder(dest_path)
+        dest_in_completed = self._is_in_completed_folder(dest_path)
+
+        if src_in_user and dest_in_completed:
+            self._moved_to_completed_sources[str(dest_path)] = str(src_path)
+            self._debouncer.trigger("moved_to_completed", dest_path)
+            return
 
         if not src_in_user and dest_in_user:
             self._moved_in_sources[str(dest_path)] = str(src_path)
@@ -441,6 +521,16 @@ class HotFolderEventHandler(FileSystemEventHandler):
         if not any(str(file_path).startswith(np) for np in self.network_paths):
             return
 
+        if self._is_in_completed_folder(file_path):
+            filename = os.path.basename(file_path)
+            entry = self._recent_user_deletes_for_completed.pop(filename, None)
+            if entry:
+                src_path, ts = entry
+                if time.time() - ts < self._recent_event_threshold:
+                    self._moved_to_completed_sources[str(file_path)] = str(src_path)
+                    self._debouncer.trigger("moved_to_completed", file_path)
+            return
+
         if self._is_in_user_folder(file_path):
             filename = os.path.basename(file_path)
             now = time.time()
@@ -470,59 +560,88 @@ class HotFolderEventHandler(FileSystemEventHandler):
             return
 
         if self._is_in_user_folder(file_path):
+            cre = self._recent_user_folder_creates.get(filename)
+            if not (
+                cre
+                and time.time() - cre[1] < self._recent_event_threshold
+            ):
+                now = time.time()
+                self._recent_user_deletes_for_completed[filename] = (file_path, now)
+                self._recent_user_deletes_for_completed = {
+                    k: v
+                    for k, v in self._recent_user_deletes_for_completed.items()
+                    if now - v[1] < self._cleanup_interval
+                }
             self._debouncer.trigger("deleted", file_path)
         else:
             self._recent_artwork_deletions[filename] = (str(file_path), time.time())
 
     def _handle_zip_deleted(self, file_path: str) -> None:
-        """Handle zip file deleted from user folder - treat as completed or moved out."""
+        """Handle zip deleted from user folder (completion is via completed folder)."""
         user_info = self._extract_user_info(file_path)
         if not user_info:
             return
 
         user_id = user_info["user_id"]
         user_name = user_info["user_name"]
-
-        # Extract filename
         filename = os.path.basename(file_path)
 
-        # Parse filename: {task_id}-{order_id}.zip
         if not filename.endswith(".zip"):
             return
 
-        name_without_ext = filename[:-4]  # Remove .zip
+        name_without_ext = filename[:-4]
         parts = name_without_ext.split("-")
         if len(parts) < 2:
             self.logger.warning(f"Cannot parse zip filename: {filename}", extra={'category': 'watcher'})
             return
 
         task_id = parts[0]
-        # Check if moved_out is pending (on_moved fired) - don't complete, let unassign handle it
+
+        if self._is_recently_completed_task(task_id):
+            return
+
         moved_out_key = f"moved_out:{file_path}"
         if moved_out_key in self._debouncer._pending_events:
             self.logger.info(
-                f"Zip moved from user folder (moved_out pending): {file_path} -> skip complete, unassign will handle",
-                extra={'category': 'watcher'}
+                f"Zip moved from user folder (moved_out pending): {file_path} -> skip, unassign will handle",
+                extra={'category': 'watcher'},
             )
             return
 
-        # Check if file was moved to artworks (copy+delete move). If file exists in artworks, unassign.
-        artworks_roots = self.network_paths - self.user_paths
-        file_in_artworks = False
-        for root in artworks_roots:
-            root_path = Path(root)
-            if root_path.is_dir():
-                for p in root_path.rglob(filename):
-                    if p.is_file():
-                        file_in_artworks = True
-                        break
-            if file_in_artworks:
-                break
+        if self._pending_moved_to_completed_for_basename(filename):
+            self.logger.info(
+                f"Zip move to completed pending: {file_path} -> skip zip_deleted handling",
+                extra={'category': 'watcher'},
+            )
+            return
 
-        if file_in_artworks:
+        if self.completed_paths and self._find_file_in_roots(filename, self.completed_paths):
+            self.logger.info(
+                f"Zip present in completed folder after move: {file_path} (task: {task_id})",
+                extra={'category': 'watcher'},
+            )
+            if self.movement_logger:
+                self.movement_logger.info(
+                    f"Zip completed (in completed folder): {file_path} (user: {user_id}, task: {task_id})",
+                    extra={
+                        'category': 'movement',
+                        'pathname': file_path,
+                        'details': {'user_id': user_id, 'task_id': task_id},
+                    },
+                )
+            if user_id and self.api_client.complete_task(task_id, user_id):
+                if file_path in self._file_users:
+                    del self._file_users[file_path]
+                self._record_recent_completed_task(task_id)
+                self.logger.info(
+                    f"Completed task {task_id} by user {user_name}", extra={'category': 'watcher'}
+                )
+            return
+
+        if self._find_file_in_roots(filename, self._artwork_search_roots):
             self.logger.info(
                 f"Zip moved from user folder to artworks: {file_path} -> unassigning task {task_id}",
-                extra={'category': 'watcher'}
+                extra={'category': 'watcher'},
             )
             if self.movement_logger:
                 self.movement_logger.info(
@@ -530,32 +649,28 @@ class HotFolderEventHandler(FileSystemEventHandler):
                     extra={
                         'category': 'movement',
                         'pathname': file_path,
-                        'details': {'user_id': user_id, 'task_id': task_id}
-                    }
+                        'details': {'user_id': user_id, 'task_id': task_id},
+                    },
                 )
             if self.api_client.unassign_task(task_id):
                 if file_path in self._file_users:
                     del self._file_users[file_path]
-                self.logger.info(f"Unassigned task {task_id} (file moved to artworks)", extra={'category': 'watcher'})
-        else:
-            self.logger.info(
-                f"Zip deleted from user folder: {file_path} (user: {user_name}, task: {task_id})",
-                extra={'category': 'watcher'}
-            )
-            if self.movement_logger:
-                self.movement_logger.info(
-                    f"Zip deleted (completed): {file_path} (user: {user_name}, task: {task_id})",
-                    extra={
-                        'category': 'movement',
-                        'pathname': file_path,
-                        'details': {'user_id': user_id, 'user_name': user_name, 'task_id': task_id}
-                    }
+                self.logger.info(
+                    f"Unassigned task {task_id} (file moved to artworks)", extra={'category': 'watcher'}
                 )
+            return
 
-            if user_id and self.api_client.complete_task(task_id, user_id):
-                if file_path in self._file_users:
-                    del self._file_users[file_path]
-                self.logger.info(f"Completed task {task_id} by user {user_name}", extra={'category': 'watcher'})
+        now = time.time()
+        self._recent_user_deletes_for_completed[filename] = (file_path, now)
+        self._recent_user_deletes_for_completed = {
+            k: v
+            for k, v in self._recent_user_deletes_for_completed.items()
+            if now - v[1] < self._cleanup_interval
+        }
+        self.logger.info(
+            f"Zip deleted from user folder: {file_path} (user: {user_name}, task: {task_id})",
+            extra={'category': 'watcher'},
+        )
 
     def process_pending(self) -> None:
         """Process pending debounced events."""
@@ -570,6 +685,7 @@ class FileWatcher:
         api_client: APIClient,
         network_paths: List[str],
         user_paths: Optional[List[str]] = None,
+        completed_paths: Optional[List[str]] = None,
         movement_log_dir: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         debounce_seconds: float = 2.0,
@@ -580,6 +696,7 @@ class FileWatcher:
         self.api_client = api_client
         self.network_paths = network_paths
         self.user_paths = user_paths or []
+        self.completed_paths = completed_paths or []
         self.movement_log_dir = movement_log_dir
         self.logger = logger or logging.getLogger(__name__)
         self.debounce_seconds = debounce_seconds
@@ -636,6 +753,7 @@ class FileWatcher:
             self.api_client,
             self.network_paths,
             user_paths=self.user_paths,
+            completed_paths=self.completed_paths,
             logger=self.logger,
             movement_logger=movement_logger,
             debounce_seconds=self.debounce_seconds,

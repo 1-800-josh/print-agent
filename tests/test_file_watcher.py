@@ -16,6 +16,7 @@ class TestIsPendingArtworkMove:
             api_client=Mock(),
             network_paths=["/network"],
             user_paths=["/network/users"],
+            completed_paths=[],
             recent_event_threshold=15,
         )
 
@@ -48,6 +49,7 @@ class TestExtractTaskInfo:
             api_client=Mock(),
             network_paths=["/network"],
             user_paths=[],
+            completed_paths=[],
         )
 
     def test_valid_filename_single_image(self, handler):
@@ -87,6 +89,7 @@ class TestExtractUserInfo:
             api_client=Mock(),
             network_paths=["/network"],
             user_paths=[base],
+            completed_paths=[],
         )
 
     def test_valid_path_with_user_id_and_name(self, handler):
@@ -115,3 +118,54 @@ class TestExtractUserInfo:
         path = os.path.join("/base/users", "file.png")  # file directly in users
         result = handler._extract_user_info(path)
         assert result is None
+
+
+class TestCompletedFolderCompletion:
+    """Completion via move into completed folder."""
+
+    def test_handle_moved_to_completed_calls_complete_task(self):
+        api = Mock()
+        api.complete_task.return_value = True
+        handler = HotFolderEventHandler(
+            api_client=api,
+            network_paths=["/network"],
+            user_paths=["/network/users"],
+            completed_paths=["/network/completed"],
+        )
+        src = os.path.join("/network/users", "123-Jane Doe", "t1-order1-morse.png")
+        dest = os.path.join("/network/completed", "t1-order1-morse.png")
+        handler._moved_to_completed_sources[dest] = src
+        handler._handle_moved_to_completed(dest)
+        api.complete_task.assert_called_once_with("t1", "123")
+
+    def test_handle_deleted_without_reassign_does_not_complete(self):
+        api = Mock()
+        handler = HotFolderEventHandler(
+            api_client=api,
+            network_paths=["/network"],
+            user_paths=["/network/users"],
+            completed_paths=["/network/completed"],
+        )
+        path = os.path.join("/network/users", "123-Jane Doe", "t1-order1-morse.png")
+        handler._handle_deleted(path)
+        api.complete_task.assert_not_called()
+        api.unassign_task.assert_not_called()
+
+    def test_on_moved_user_to_completed_queues_completion_not_moved_out(self):
+        api = Mock()
+        handler = HotFolderEventHandler(
+            api_client=api,
+            network_paths=["/network"],
+            user_paths=["/network/users"],
+            completed_paths=["/network/completed"],
+        )
+
+        class Ev:
+            src_path = os.path.join("/network/users", "123-Name", "t1-order1-m.png")
+            dest_path = os.path.join("/network/completed", "t1-order1-m.png")
+            is_directory = False
+
+        handler.on_moved(Ev())
+        pending = handler._debouncer._pending_events
+        assert any(k.startswith("moved_to_completed:") for k in pending)
+        assert not any(k.startswith("moved_out:") for k in pending)

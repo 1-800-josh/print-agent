@@ -15,6 +15,7 @@ class TestAgentConfigFromFile:
         config_data = {
             "SYNC_INTERVAL_SECONDS": 120,
             "ARTWORK_FOLDER": "custom_artworks",
+            "COMPLETED_FOLDER": "done",
             "API_KEY": "test-key"
         }
         config_file = tmp_path / "config.json"
@@ -24,6 +25,7 @@ class TestAgentConfigFromFile:
         config = AgentConfig.from_file(config_file)
         assert config.SYNC_INTERVAL_SECONDS == 120
         assert config.ARTWORK_FOLDER == "custom_artworks"
+        assert config.COMPLETED_FOLDER == "done"
         assert config.API_KEY == "test-key"
 
     def test_uses_defaults_for_missing_keys(self, tmp_path):
@@ -37,6 +39,7 @@ class TestAgentConfigFromFile:
         assert config.SYNC_INTERVAL_SECONDS == 60  # default
         assert config.ARTWORK_FOLDER == "artworks"  # default
         assert config.USERS_FOLDER == "users"  # default
+        assert config.COMPLETED_FOLDER == "completed"  # default
         assert config.STRUCTURED_STATUS_STDOUT_ENABLED is False
         assert config.HEALTH_HEARTBEAT_INTERVAL_SECONDS == 30
         assert config.API_KEY == "test-key"  # from file

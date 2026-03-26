@@ -4,7 +4,7 @@ import os
 import pytest
 from unittest.mock import Mock, patch
 
-from src.api_client import APIClient, PrintingTask, ArtworkInfo, TasksResponse
+from src.api_client import APIClient, PrintingTask, ArtworkInfo, TasksResponse, User
 from src.config import AgentConfig
 from src.order_sync import OrderSync, SyncResult
 
@@ -140,6 +140,7 @@ class TestShouldSkipArtworkDownload:
         """When should_skip_artwork_download returns True, file is not downloaded."""
         mock_api = Mock()
         mock_api.fetch_tasks.return_value = TasksResponse(tasks=[task_with_artwork])
+        mock_api.fetch_users.return_value = []
 
         def skip_fn(filename):
             return filename == "task1-order1-morse123.png"
@@ -165,6 +166,7 @@ class TestShouldSkipArtworkDownload:
 
         mock_api = Mock()
         mock_api.fetch_tasks.return_value = TasksResponse(tasks=[task_with_artwork])
+        mock_api.fetch_users.return_value = []
 
         order_sync = OrderSync(
             config=config,
@@ -177,3 +179,33 @@ class TestShouldSkipArtworkDownload:
 
         assert mock_download.call_count == 1
         assert result.downloaded == 1
+
+    @patch("src.order_sync.OrderSync.download_artwork")
+    def test_assigned_task_downloads_to_user_folder(
+        self, mock_download, config, task_with_artwork
+    ):
+        """When task has assigned_user_id, save under that user's folder, not artworks."""
+        mock_download.return_value = (True, "Downloaded")
+
+        mock_api = Mock()
+        mock_api.fetch_tasks.return_value = TasksResponse(tasks=[task_with_artwork])
+        mock_api.fetch_users.return_value = [
+            User(user_id="99", first_name="Jane", last_name="Doe"),
+        ]
+        task_with_artwork.assigned_user_id = "99"
+
+        order_sync = OrderSync(
+            config=config,
+            api_client=mock_api,
+            file_exists_in_users=lambda _: False,
+            should_skip_artwork_download=lambda _: False,
+        )
+
+        result = order_sync.sync_orders()
+
+        assert mock_download.call_count == 1
+        assert result.downloaded == 1
+        save_path = mock_download.call_args[0][0][1]
+        norm = save_path.replace(os.sep, "/")
+        assert "users" in norm and "99-Jane Doe" in norm
+        assert "artworks" not in norm

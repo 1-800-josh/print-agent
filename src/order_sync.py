@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
 
-from src.api_client import APIClient, PrintingTask
+from src.api_client import APIClient, PrintingTask, User
 from src.config import AgentConfig
 from src.utils import generate_filename
 
@@ -115,6 +115,25 @@ class OrderSync:
             grouped[key].append(task)
         return dict(grouped)
 
+    def _build_user_folder_map(self) -> Dict[str, str]:
+        """Map internal user id -> folder path under USERS_FOLDER for assigned-task downloads."""
+        prefix = (self.config.NETWORK_DRIVE_PREFIX or "").rstrip(os.sep)
+        if not prefix or not self.config.USERS_FOLDER:
+            return {}
+        try:
+            users: List[User] = self.api_client.fetch_users()
+        except Exception as e:
+            self.logger.warning(
+                f"Could not fetch users for assigned download paths: {e}",
+                extra={'category': 'sync'},
+            )
+            return {}
+        base = os.path.join(prefix, self.config.USERS_FOLDER)
+        return {
+            u.user_id: os.path.join(base, f"{u.user_id}-{u.first_name} {u.last_name}")
+            for u in users
+        }
+
     def download_artwork(
         self,
         artwork_data: Tuple[
@@ -167,6 +186,8 @@ class OrderSync:
         # Group by material and delivery date
         grouped = self.group_by_material_and_date(tasks)
 
+        user_folder_by_id = self._build_user_folder_map()
+
         # Prepare download list
         # Target pattern: {NETWORK_DRIVE_PREFIX}/{artworkNetworkPath}/{material_networkPath}-{date}/{filename}.ext
         prefix = (self.config.NETWORK_DRIVE_PREFIX or "").rstrip(os.sep)
@@ -207,13 +228,19 @@ class OrderSync:
                 if not task.morse_code:
                     continue
 
+                dest_folder = date_folder
+                if task.assigned_user_id:
+                    assigned_path = user_folder_by_id.get(task.assigned_user_id)
+                    if assigned_path:
+                        dest_folder = assigned_path
+
                 task_has_multiple_artworks = len(task.artworks) > 1
                 zip_filename = None
 
                 # For multi-artwork tasks, check if zip already exists before processing
                 if task_has_multiple_artworks:
                     zip_filename = f"{task.task_id}-{task.order_id}.zip"
-                    zip_path = os.path.join(date_folder, zip_filename)
+                    zip_path = os.path.join(dest_folder, zip_filename)
                     if os.path.exists(zip_path):
                         self.logger.debug(f"Skipping existing zip in artworks: {zip_path}")
                         continue
@@ -248,7 +275,7 @@ class OrderSync:
 
                     filename = f"{filename_base}{ext}"
 
-                    save_path = os.path.join(date_folder, filename)
+                    save_path = os.path.join(dest_folder, filename)
 
                     if os.path.exists(save_path):
                         self.logger.debug(f"Skipping existing file: {save_path}")
@@ -263,7 +290,7 @@ class OrderSync:
                         continue
 
                     self._log_rename(
-                        os.path.basename(artwork.uploadthing_url), filename, date_folder
+                        os.path.basename(artwork.uploadthing_url), filename, dest_folder
                     )
 
                     downloads.append(

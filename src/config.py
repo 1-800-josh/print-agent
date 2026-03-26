@@ -34,6 +34,7 @@ class AgentConfig:
     NETWORK_DRIVE_PREFIX: str = ""
     ARTWORK_FOLDER: str = "artworks"
     USERS_FOLDER: str = "users"
+    COMPLETED_FOLDER: str = "completed"
 
     # Service
     SERVICE_NAME: str = "PrintAgentSync"
@@ -102,6 +103,7 @@ class AgentConfig:
             NETWORK_DRIVE_PREFIX=data.get("NETWORK_DRIVE_PREFIX", cls.NETWORK_DRIVE_PREFIX),
             ARTWORK_FOLDER=data.get("ARTWORK_FOLDER", cls.ARTWORK_FOLDER),
             USERS_FOLDER=data.get("USERS_FOLDER", cls.USERS_FOLDER),
+            COMPLETED_FOLDER=data.get("COMPLETED_FOLDER", cls.COMPLETED_FOLDER),
             SERVICE_NAME=data.get("SERVICE_NAME", cls.SERVICE_NAME),
             INSTANCE_ID=data.get("INSTANCE_ID", cls.INSTANCE_ID),
             STRUCTURED_STATUS_STDOUT_ENABLED=to_bool(

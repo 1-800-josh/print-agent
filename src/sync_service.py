@@ -344,6 +344,13 @@ class SyncService:
             os.makedirs(base_path, exist_ok=True)
             self.logger.info(f"Created base folder: {base_path}", extra={'category': 'service'})
 
+            if self.config.COMPLETED_FOLDER:
+                completed_base = os.path.join(
+                    self.config.NETWORK_DRIVE_PREFIX, self.config.COMPLETED_FOLDER
+                )
+                os.makedirs(completed_base, exist_ok=True)
+                self.logger.info(f"Created completed folder: {completed_base}", extra={'category': 'service'})
+
             users = self.api_client.fetch_users()
             for user in users:
                 folder_name = f"{user.user_id}-{user.first_name} {user.last_name}"
@@ -386,6 +393,8 @@ class SyncService:
         if self.config.USERS_FOLDER:
             full_path = self._build_watch_path(prefix, self.config.USERS_FOLDER)
             watch_paths.append(full_path)
+        if self.config.COMPLETED_FOLDER:
+            watch_paths.append(self._build_watch_path(prefix, self.config.COMPLETED_FOLDER))
 
         if not watch_paths:
             self.logger.warning("No network paths configured, skipping file watcher", extra={'category': 'watcher'})
@@ -395,10 +404,15 @@ class SyncService:
         if self.config.USERS_FOLDER:
             user_paths.append(self._build_watch_path(prefix, self.config.USERS_FOLDER))
 
+        completed_paths: List[str] = []
+        if self.config.COMPLETED_FOLDER:
+            completed_paths.append(self._build_watch_path(prefix, self.config.COMPLETED_FOLDER))
+
         self.file_watcher = FileWatcher(
             self.api_client,
             watch_paths,
             user_paths=user_paths,
+            completed_paths=completed_paths,
             movement_log_dir=self.config.MOVEMENT_LOG_DIR,
             logger=self.logger,
             debounce_seconds=self.config.FILE_EVENT_DEBOUNCE_SECONDS,
@@ -439,14 +453,17 @@ class SyncService:
             # 1. Refresh paths / fetch tasks (need fresh data for reconciliation)
             self._refresh_network_paths(force=True)
 
-            # 2. Reconcile task states (fs vs DB)
+            # 2. Order sync (download) BEFORE reconcile: if a file was deleted from the user
+            #    folder but the API still shows the task assigned, we must download first so
+            #    assigned_user_id routing in order_sync applies. Reconcile's "file not found"
+            #    branch would otherwise unassign before sync runs, sending files to artworks.
+            result = self.order_sync.sync_orders()
+
+            # 3. Reconcile task states (fs vs DB)
             self._reconcile_task_states()
 
-            # 3. Clean empty artwork folders
+            # 4. Clean empty artwork folders
             self._cleanup_empty_artwork_folders()
-
-            # 4. Order sync (download new files)
-            result = self.order_sync.sync_orders()
 
             if result.success:
                 self._last_successful_sync_at = self._now_iso()
