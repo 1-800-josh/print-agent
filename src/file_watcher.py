@@ -768,11 +768,18 @@ class FileWatcher:
         self.observer = observer
 
         for path in self.network_paths:
-            if os.path.exists(path):
-                observer.schedule(self.handler, path, recursive=True)
-                self.logger.info(f"Watching: {path}", extra={'category': 'watcher'})
-            else:
-                self.logger.warning(f"Network path does not exist: {path}", extra={'category': 'watcher'})
+            if not os.path.exists(path):
+                try:
+                    os.makedirs(path, exist_ok=True)
+                    self.logger.info(f"Created network path: {path}", extra={'category': 'watcher'})
+                except OSError as e:
+                    self.logger.warning(
+                        f"Network path does not exist and could not be created: {path} ({e})",
+                        extra={'category': 'watcher'},
+                    )
+                    continue
+            observer.schedule(self.handler, path, recursive=True)
+            self.logger.info(f"Watching: {path}", extra={'category': 'watcher'})
 
         observer.start()
         self._running = True

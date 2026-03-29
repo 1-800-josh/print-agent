@@ -160,7 +160,7 @@ class OrderSync:
             return (True, f"Downloaded {order_id}/{artwork_id}")
 
         except Exception as e:
-            return (False, f"Failed to download {order_id}/{artwork_id}: {e}")
+            return (False, f"Failed to download {order_id}/{artwork_id} ({url}): {e}")
 
     def sync_orders(self) -> SyncResult:
         """Synchronize orders to network paths."""
