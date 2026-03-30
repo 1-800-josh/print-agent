@@ -134,7 +134,7 @@ class TestCompletedFolderCompletion:
         )
         src = os.path.join("/network/users", "123-Jane Doe", "t1-order1-morse.png")
         dest = os.path.join("/network/completed", "t1-order1-morse.png")
-        handler._moved_to_completed_sources[dest] = src
+        handler._record_moved_to_completed(dest, src)
         handler._handle_moved_to_completed(dest)
         api.complete_task.assert_called_once_with("t1", "123")
 
@@ -169,3 +169,28 @@ class TestCompletedFolderCompletion:
         pending = handler._debouncer._pending_events
         assert any(k.startswith("moved_to_completed:") for k in pending)
         assert not any(k.startswith("moved_out:") for k in pending)
+
+    def test_on_deleted_queues_completion_when_file_already_in_completed(self, tmp_path):
+        """Copy+delete race: completed appears before delete-from-user is correlated."""
+        network = tmp_path / "network"
+        completed_dir = network / "completed"
+        completed_dir.mkdir(parents=True)
+        name = "9-12-12-10.png"
+        (completed_dir / name).write_bytes(b"x")
+
+        user_deleted_path = network / "users" / "2-Joseph" / name
+        api = Mock()
+        handler = HotFolderEventHandler(
+            api_client=api,
+            network_paths=[str(network)],
+            user_paths=[str(network / "users")],
+            completed_paths=[str(completed_dir)],
+        )
+
+        class Ev:
+            src_path = str(user_deleted_path)
+            is_directory = False
+
+        handler.on_deleted(Ev())
+        pending = handler._debouncer._pending_events
+        assert any(k.startswith("moved_to_completed:") for k in pending)

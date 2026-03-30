@@ -174,15 +174,56 @@ class HotFolderEventHandler(FileSystemEventHandler):
         """Watch roots that are neither user folders nor completed (e.g. artworks)."""
         return self.network_paths - self.user_paths - self.completed_paths
 
-    def _find_file_in_roots(self, filename: str, roots: Set[str]) -> bool:
-        """Return True if filename exists as a file under any root (recursive)."""
+    def _find_first_file_path_in_roots(self, filename: str, roots: Set[str]) -> Optional[str]:
+        """Return first path where filename exists as a file under any root (recursive)."""
         for root in roots:
             root_path = Path(root)
             if root_path.is_dir():
                 for p in root_path.rglob(filename):
                     if p.is_file():
-                        return True
-        return False
+                        return str(p)
+        return None
+
+    def _find_file_in_roots(self, filename: str, roots: Set[str]) -> bool:
+        """Return True if filename exists as a file under any root (recursive)."""
+        return self._find_first_file_path_in_roots(filename, roots) is not None
+
+    def _path_key(self, path: str) -> str:
+        """Stable path identity for dict lookups (watchdog paths may vary slightly)."""
+        try:
+            return os.path.normcase(
+                os.path.normpath(os.path.abspath(os.path.expanduser(str(path))))
+            )
+        except (OSError, TypeError, ValueError):
+            return os.path.normcase(os.path.normpath(str(path)))
+
+    def _record_moved_to_completed(self, dest_path: str, src_path: str) -> None:
+        self._moved_to_completed_sources[self._path_key(dest_path)] = self._path_key(src_path)
+
+    def _pop_moved_to_completed_src(self, dest_path: str) -> Optional[str]:
+        dk = self._path_key(dest_path)
+        src = self._moved_to_completed_sources.pop(dk, None)
+        if src is not None:
+            return src
+        for k, v in list(self._moved_to_completed_sources.items()):
+            if self._path_key(k) == dk:
+                return self._moved_to_completed_sources.pop(k)
+        return None
+
+    def _lookup_file_user_id(self, path: str) -> Optional[str]:
+        """Resolve user_id from assign-time tracking when path parsing fails."""
+        dk = self._path_key(path)
+        for stored_path, uid in self._file_users.items():
+            if self._path_key(stored_path) == dk:
+                return uid
+        return None
+
+    def _remove_file_user_entry(self, path: str) -> None:
+        dk = self._path_key(path)
+        for k in list(self._file_users.keys()):
+            if self._path_key(k) == dk:
+                del self._file_users[k]
+                return
 
     def _pending_moved_to_completed_for_basename(self, basename: str) -> bool:
         """True if a debounced moved_to_completed for this filename is pending."""
@@ -226,37 +267,53 @@ class HotFolderEventHandler(FileSystemEventHandler):
 
         user_info = self._extract_user_info(src_path)
         if not user_info:
+            uid = self._lookup_file_user_id(src_path)
+            if uid:
+                user_info = {"user_id": uid, "user_name": uid}
+        if not user_info:
+            self.logger.warning(
+                f"Cannot complete: no user for task {task_id} (src={src_path!r})",
+                extra={'category': 'watcher'},
+            )
             return
 
         user_id = user_info["user_id"]
         user_name = user_info["user_name"]
 
-        self.logger.info(
-            f"Task completed (moved to completed folder): {dest_path} (user: {user_name}, task: {task_id})",
-            extra={'category': 'watcher'},
-        )
-        if self.movement_logger:
-            self.movement_logger.info(
-                f"Completed (moved to completed): {dest_path} src={src_path} (user: {user_id}, task: {task_id})",
-                extra={
-                    'category': 'movement',
-                    'pathname': dest_path,
-                    'details': {'user_id': user_id, 'task_id': task_id, 'src_path': src_path},
-                },
-            )
-
-        if user_id and self.api_client.complete_task(task_id, user_id):
-            if src_path in self._file_users:
-                del self._file_users[src_path]
+        ok = bool(user_id) and self.api_client.complete_task(task_id, user_id)
+        if ok:
+            self._remove_file_user_entry(src_path)
             self._record_recent_completed_task(task_id)
             self.logger.info(
+                f"Task completed (moved to completed folder): {dest_path} (user: {user_name}, task: {task_id})",
+                extra={'category': 'watcher'},
+            )
+            if self.movement_logger:
+                self.movement_logger.info(
+                    f"Completed (moved to completed): {dest_path} src={src_path} (user: {user_id}, task: {task_id})",
+                    extra={
+                        'category': 'movement',
+                        'pathname': dest_path,
+                        'details': {'user_id': user_id, 'task_id': task_id, 'src_path': src_path},
+                    },
+                )
+            self.logger.info(
                 f"Completed task {task_id} by user {user_name}", extra={'category': 'watcher'}
+            )
+        else:
+            self.logger.warning(
+                f"Could not complete task {task_id} via API (user {user_id}, dest={dest_path!r})",
+                extra={'category': 'watcher'},
             )
 
     def _handle_moved_to_completed(self, dest_path: str) -> None:
         """Handle file moved or copied into the completed folder."""
-        src_path = self._moved_to_completed_sources.pop(dest_path, None)
+        src_path = self._pop_moved_to_completed_src(dest_path)
         if not src_path:
+            self.logger.warning(
+                f"moved_to_completed: missing src mapping for dest={dest_path!r}",
+                extra={'category': 'watcher'},
+            )
             return
         self._complete_task_for_user_src(src_path, dest_path)
 
@@ -432,7 +489,7 @@ class HotFolderEventHandler(FileSystemEventHandler):
         dest_in_completed = self._is_in_completed_folder(dest_path)
 
         if src_in_user and dest_in_completed:
-            self._moved_to_completed_sources[str(dest_path)] = str(src_path)
+            self._record_moved_to_completed(str(dest_path), str(src_path))
             self._debouncer.trigger("moved_to_completed", dest_path)
             return
 
@@ -527,7 +584,7 @@ class HotFolderEventHandler(FileSystemEventHandler):
             if entry:
                 src_path, ts = entry
                 if time.time() - ts < self._recent_event_threshold:
-                    self._moved_to_completed_sources[str(file_path)] = str(src_path)
+                    self._record_moved_to_completed(str(file_path), str(src_path))
                     self._debouncer.trigger("moved_to_completed", file_path)
             return
 
@@ -573,6 +630,14 @@ class HotFolderEventHandler(FileSystemEventHandler):
                     if now - v[1] < self._cleanup_interval
                 }
             self._debouncer.trigger("deleted", file_path)
+            # Copy/move may create the file under completed before the user-folder delete is seen;
+            # on_created then finds no _recent_user_deletes_for_completed entry. If the file is
+            # already in completed when the user path is deleted, queue completion here.
+            if self.completed_paths:
+                dest_path = self._find_first_file_path_in_roots(filename, self.completed_paths)
+                if dest_path:
+                    self._record_moved_to_completed(dest_path, str(file_path))
+                    self._debouncer.trigger("moved_to_completed", dest_path)
         else:
             self._recent_artwork_deletions[filename] = (str(file_path), time.time())
 
@@ -615,28 +680,16 @@ class HotFolderEventHandler(FileSystemEventHandler):
             )
             return
 
-        if self.completed_paths and self._find_file_in_roots(filename, self.completed_paths):
-            self.logger.info(
-                f"Zip present in completed folder after move: {file_path} (task: {task_id})",
-                extra={'category': 'watcher'},
-            )
-            if self.movement_logger:
-                self.movement_logger.info(
-                    f"Zip completed (in completed folder): {file_path} (user: {user_id}, task: {task_id})",
-                    extra={
-                        'category': 'movement',
-                        'pathname': file_path,
-                        'details': {'user_id': user_id, 'task_id': task_id},
-                    },
-                )
-            if user_id and self.api_client.complete_task(task_id, user_id):
-                if file_path in self._file_users:
-                    del self._file_users[file_path]
-                self._record_recent_completed_task(task_id)
+        if self.completed_paths:
+            dest_in_completed = self._find_first_file_path_in_roots(filename, self.completed_paths)
+            if dest_in_completed:
                 self.logger.info(
-                    f"Completed task {task_id} by user {user_name}", extra={'category': 'watcher'}
+                    f"Zip present in completed folder after move: {file_path} (task: {task_id})",
+                    extra={'category': 'watcher'},
                 )
-            return
+                # Same path as single-artwork completion: user resolution, API, and failure logs.
+                self._complete_task_for_user_src(str(file_path), dest_in_completed)
+                return
 
         if self._find_file_in_roots(filename, self._artwork_search_roots):
             self.logger.info(

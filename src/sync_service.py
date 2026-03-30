@@ -15,6 +15,9 @@ from src.file_watcher import FileWatcher
 from src.order_sync import OrderSync
 from src.utils import get_shutdown_event, setup_logging, setup_signal_handlers
 
+# Sentinel for _build_fs_state: task artwork exists under COMPLETED_FOLDER (not under users/artworks).
+FS_TASK_FILE_IN_COMPLETED = "__print_agent_completed__"
+
 
 class SyncService:
     """Main sync service combining order sync and file watching."""
@@ -72,17 +75,27 @@ class SyncService:
         return folder
 
     def _file_exists_in_users(self, filename: str) -> bool:
-        """Return True if filename exists under users folder (filesystem as source of truth)."""
-        if not self.config.USERS_FOLDER or not self.config.NETWORK_DRIVE_PREFIX:
+        """Return True if filename exists under users or completed folder (skip re-download)."""
+        if not self.config.NETWORK_DRIVE_PREFIX:
             return False
         prefix = (self.config.NETWORK_DRIVE_PREFIX or "").rstrip(os.sep)
-        users_base = os.path.join(prefix, self.config.USERS_FOLDER)
-        if not os.path.isdir(users_base):
-            return False
-        for p in Path(users_base).rglob(filename):
-            if p.is_file():
-                return True
-        return False
+        in_users = False
+        if self.config.USERS_FOLDER:
+            users_base = os.path.join(prefix, self.config.USERS_FOLDER)
+            if os.path.isdir(users_base):
+                for p in Path(users_base).rglob(filename):
+                    if p.is_file():
+                        in_users = True
+                        break
+        in_completed = False
+        if self.config.COMPLETED_FOLDER:
+            completed_base = os.path.join(prefix, self.config.COMPLETED_FOLDER)
+            if os.path.isdir(completed_base):
+                for p in Path(completed_base).rglob(filename):
+                    if p.is_file():
+                        in_completed = True
+                        break
+        return in_users or in_completed
 
     def _should_skip_artwork_download(self, filename: str) -> bool:
         """Return True if filename was recently deleted from artwork (move in progress)."""
@@ -180,6 +193,26 @@ class SyncService:
                                             fs_state[task_id] = (user_id, [])
                                         fs_state[task_id][1].append(path_str)
 
+        # Files moved to completed are not under users/; include them so reconcile does not unassign.
+        if self.config.COMPLETED_FOLDER:
+            completed_base = os.path.join(prefix, self.config.COMPLETED_FOLDER)
+            if os.path.isdir(completed_base):
+                for f in Path(completed_base).rglob("*"):
+                    if not f.is_file() or not self._is_artwork_or_zip_file(f.name):
+                        continue
+                    task_id = self._extract_task_id_from_filename(f.name)
+                    if not task_id:
+                        continue
+                    path_str = str(f)
+                    existing = fs_state.get(task_id)
+                    if existing:
+                        eu, ep = existing
+                        if eu is not None and eu != FS_TASK_FILE_IN_COMPLETED:
+                            continue
+                        fs_state[task_id] = (FS_TASK_FILE_IN_COMPLETED, ep + [path_str])
+                    else:
+                        fs_state[task_id] = (FS_TASK_FILE_IN_COMPLETED, [path_str])
+
         return fs_state
 
     def _reconcile_task_states(self) -> None:
@@ -215,6 +248,8 @@ class SyncService:
 
             if fs_entry:
                 fs_user_id, paths = fs_entry
+                if fs_user_id == FS_TASK_FILE_IN_COMPLETED:
+                    continue
                 if fs_user_id and fs_user_id != db_assigned:
                     if self.api_client.assign_task(task_ids=[task_id], user_id=fs_user_id):
                         assigned_count += 1
